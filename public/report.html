@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help & reports | Foodies</title>
+<link rel="icon" href="/Images/Restaurants/download.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main id="main" class="wrap" style="max-width:820px">
+  <h1>Help &amp; reports</h1>
+  <div id="whatsapp"></div>
+  <div class="card">
+    <h2>Report a problem</h2>
+    <form id="form" novalidate>
+      <div class="form-alert"></div>
+      <div class="row">
+        <div class="field"><label for="category">What is it about?</label>
+          <select id="category" name="category">
+            <option value="order">An order</option><option value="payment">A payment</option><option value="food">The food</option>
+            <option value="restaurant">A restaurant</option><option value="account">My account</option><option value="other">Something else</option>
+          </select></div>
+        <div class="field"><label for="orderId">Order (optional)</label><select id="orderId" name="orderId"><option value="">&mdash; none &mdash;</option></select></div>
+      </div>
+      <div class="field"><label for="subject">Subject</label><input id="subject" name="subject" maxlength="150" required></div>
+      <div class="field"><label for="description">Describe the problem</label><textarea id="description" name="description" maxlength="3000" required></textarea></div>
+      <button class="btn" type="submit">Send report</button>
+    </form>
+  </div>
+  <h2 style="margin-top:2rem">My reports</h2>
+  <div id="list"></div>
+</main>
+<script type="module" src="/js/report.js"></script>
+</body>
+</html>

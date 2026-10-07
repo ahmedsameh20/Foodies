@@ -1,0 +1,9 @@
+node_modules
+data
+uploads
+.env
+.git
+legacy
+tests
+*.log
+.claude

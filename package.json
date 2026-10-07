@@ -1,0 +1,45 @@
+{
+  "name": "foodies-marketplace",
+  "version": "1.0.0",
+  "description": "Restaurant ordering marketplace: customers, restaurants, admin, card payments (Tap), commission ledger and weekly payouts",
+  "private": true,
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server/migrate.js && node server/index.js",
+    "dev": "node --watch server/index.js",
+    "migrate": "node server/migrate.js",
+    "seed": "node server/seed.js",
+    "seed:sample": "node server/seed.js --sample",
+    "admin:create": "node server/create-admin.js",
+    "admin:reset-2fa": "node server/admin-reset-2fa.js",
+    "payouts:weekly": "node scripts/weekly-payouts.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "check": "node scripts/check.js",
+    "build": "node scripts/check.js",
+    "verify": "node scripts/check.js && node --test --test-concurrency=1 tests/*.test.js",
+    "smoke": "node scripts/smoke.js",
+    "linkcheck": "node scripts/linkcheck.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/restore.js",
+    "sandbox:tap": "node scripts/tap-sandbox.js",
+    "test:pg": "node scripts/test-pg.js",
+    "db:sqlite-to-postgres": "node scripts/sqlite-to-postgres.js",
+    "db:local": "node scripts/local-postgres.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^10.0.15",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}

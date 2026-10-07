@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create account | Foodies</title>
+<link rel="icon" href="/Images/Restaurants/download.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main id="main" class="narrow">
+  <div class="card">
+    <h1>Create your account</h1>
+    <div role="radiogroup" aria-label="Account type" class="row" id="kind" style="margin-bottom:1rem">
+      <label class="card check" style="margin:0"><input type="radio" name="kind" value="customer" checked> I want to order food</label>
+      <label class="card check" style="margin:0"><input type="radio" name="kind" value="owner"> I run a restaurant</label>
+    </div>
+    <form id="form" novalidate>
+      <div class="form-alert"></div>
+      <div class="field"><label for="name">Full name</label><input id="name" name="name" autocomplete="name" required maxlength="100"></div>
+      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8"><div class="hint">At least 8 characters, with letters and numbers.</div></div>
+      <button class="btn block" type="submit">Create account</button>
+    </form>
+    <p class="small muted" style="margin-top:1rem">Already registered? <a href="/login.html">Sign in</a></p>
+  </div>
+</main>
+<script type="module" src="/js/register.js"></script>
+</body>
+</html>
