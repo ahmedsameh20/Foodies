@@ -1,4 +1,4 @@
-import { api, mountChrome, $, render, html, spinner, emptyState, errorBox } from './common.js';
+import { api, mountChrome, $, render, html, spinner, emptyState, errorBox, t } from './common.js';
 import { restaurantCard } from './shared-ui.js';
 
 mountChrome({ active: 'restaurants' });
@@ -9,7 +9,7 @@ async function load(q = '') {
     const { restaurants } = await api(`/public/restaurants${q ? `?q=${encodeURIComponent(q)}` : ''}`);
     render($('#list'), restaurants.length
       ? html`<div class="grid cols-4">${restaurants.map(restaurantCard)}</div>`
-      : emptyState('No restaurants found', q ? 'Try a different search.' : 'Restaurants will appear here once they join the platform.'));
+      : emptyState(t('restaurants.none'), q ? t('restaurants.tryOther') : t('restaurants.willAppear')));
   } catch (e) { render($('#list'), errorBox(e)); }
 }
 

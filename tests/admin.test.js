@@ -35,7 +35,7 @@ test('every admin endpoint is closed to anonymous users, customers, owners and s
     }
   }
   // privilege escalation attempts via public registration
-  const sneaky = await t.call('POST', '/api/auth/register', { body: { name: 'Eve', email: `${t.unique('eve')}@t.test`, password: 'Passw0rd!', role: 'super_admin' } });
+  const sneaky = await t.call('POST', '/api/auth/register', { body: { name: 'Eve', email: `${t.unique('eve')}@t.test`, phone: '+966500000000', password: 'Passw0rd!', role: 'super_admin' } });
   assert.equal(sneaky.body.data.user.role, 'customer');
 });
 

@@ -1,20 +1,20 @@
-import { api, mountChrome, onSubmit, $, render, html } from './common.js';
+import { api, mountChrome, onSubmit, $, render, html, errorMessage, t } from './common.js';
 
 export function initForgot() {
   mountChrome();
   onSubmit($('#form'), async (d) => {
-    const r = await api('/auth/forgot-password', { method: 'POST', body: { email: d.email } });
-    render($('.card'), html`<h1>Check your email</h1><p>${r.message}</p><a class="btn" href="/login.html">Back to sign in</a>`);
+    await api('/auth/forgot-password', { method: 'POST', body: { email: d.email } });
+    render($('.card'), html`<h1>${t('forgot.checkEmail')}</h1><p>${t('forgot.sent')}</p><a class="btn" href="/login.html">${t('forgot.back')}</a>`);
   });
 }
 
 export function initReset() {
   mountChrome();
   const token = new URLSearchParams(location.search).get('token');
-  if (!token) { render($('.card'), html`<h1>Link not valid</h1><p>This reset link is missing its token. Request a new one.</p><a class="btn" href="/forgot-password.html">Request a link</a>`); return; }
+  if (!token) { render($('.card'), html`<h1>${t('reset.invalidHead')}</h1><p>${t('reset.invalidText')}</p><a class="btn" href="/forgot-password.html">${t('reset.request')}</a>`); return; }
   onSubmit($('#form'), async (d) => {
     await api('/auth/reset-password', { method: 'POST', body: { token, password: d.password } });
-    render($('.card'), html`<h1>Password updated</h1><p>You can now sign in with your new password.</p><a class="btn" href="/login.html">Sign in</a>`);
+    render($('.card'), html`<h1>${t('reset.doneHead')}</h1><p>${t('reset.doneText')}</p><a class="btn" href="/login.html">${t('nav.signIn')}</a>`);
   });
 }
 
@@ -22,11 +22,11 @@ export async function initVerify() {
   mountChrome();
   const token = new URLSearchParams(location.search).get('token');
   const box = $('#result');
-  if (!token) return render(box, html`<h1>Link not valid</h1><p>This confirmation link is incomplete.</p>`);
+  if (!token) return render(box, html`<h1>${t('verify.invalidHead')}</h1><p>${t('verify.invalidText')}</p>`);
   try {
     await api('/auth/verify-email', { method: 'POST', body: { token } });
-    render(box, html`<h1>Email confirmed</h1><p>Thank you. Your email address is now verified.</p><a class="btn" href="/">Continue</a>`);
+    render(box, html`<h1>${t('verify.okHead')}</h1><p>${t('verify.okText')}</p><a class="btn" href="/">${t('verify.continue')}</a>`);
   } catch (e) {
-    render(box, html`<h1>Link expired</h1><p>${e.message}</p><p class="muted small">Sign in and use "Resend" from your account to get a new link.</p>`);
+    render(box, html`<h1>${t('verify.expiredHead')}</h1><p>${errorMessage(e)}</p><p class="muted small">${t('verify.expiredHint')}</p>`);
   }
 }

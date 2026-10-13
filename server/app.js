@@ -13,6 +13,7 @@ const payments = require('./services/payments');
 const authRoutes = require('./routes/auth');
 const { router: publicRoutes, me, support } = require('./routes/public');
 const manageRoutes = require('./routes/manage');
+const geoRoutes = require('./routes/geo');
 const { onboarding, admin } = require('./routes/admin');
 
 function createApp(db, { provider = createProvider() } = {}) {
@@ -21,6 +22,9 @@ function createApp(db, { provider = createProvider() } = {}) {
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
 
   app.use(helmet({
+    // helmet's default (no-referrer) makes browsers send NO Referer with map-tile requests, and tile.openstreetmap.org answers those with
+    // "403 Access blocked: Referer is required" (its tile usage policy). Only the origin is sent, and only to other origins.
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -101,6 +105,8 @@ function createApp(db, { provider = createProvider() } = {}) {
   const images = path.join(config.ROOT, 'Images');
   app.use('/Images', express.static(images, { index: false }));
   app.use('/uploads', express.static(config.uploadDir, { index: false }));
+  // Leaflet (BSD-2) is served from our own origin: the strict CSP allows scripts and styles from 'self' only.
+  app.use('/vendor/leaflet', express.static(path.join(config.ROOT, 'node_modules', 'leaflet', 'dist'), { index: false, maxAge: config.isProd ? '7d' : 0 }));
   if (config.serveLegacy) {
     // The original static site (sample content), available in development only unless SERVE_LEGACY=1.
     app.use('/legacy/Images', express.static(images, { index: false }));
@@ -159,6 +165,7 @@ function createApp(db, { provider = createProvider() } = {}) {
   api.use('/me', me);
   api.use('/support', support);
   api.use('/onboarding', onboarding);
+  api.use('/geo', geoRoutes);
   api.use('/manage', manageRoutes);
   // Short aliases for the restaurant's own data (GET /api/orders, /api/products, ...). They run the very same
   // tenant-scoped handlers: the restaurant comes from the signed-in user, never from the URL or body.

@@ -32,7 +32,7 @@ test('onboarding picks the starting subscription from the plan: free=active, pai
 
   // owner chooses a paid plan with a trial at registration
   const email = `${t.unique('o')}@t.test`;
-  const reg = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Trial Owner', email, password: 'Passw0rd!' } });
+  const reg = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Trial Owner', email, phone: '+966500000000', password: 'Passw0rd!' } });
   const r = await t.call('POST', '/api/onboarding/restaurant', { token: reg.body.data.token, body: { name: `Trial ${t.unique('')}`, planCode: 'pro' } });
   assert.equal(r.status, 201);
   const row = t.db.prepare('SELECT * FROM subscriptions WHERE restaurant_id = ?').get(r.body.data.restaurant.id);
@@ -42,14 +42,14 @@ test('onboarding picks the starting subscription from the plan: free=active, pai
 
   // a paid plan with no trial needs payment first
   t.db.prepare("UPDATE plans SET trial_days = 0 WHERE code = 'business'").run();
-  const reg2 = await t.call('POST', '/api/auth/register-owner', { body: { name: 'No Trial', email: `${t.unique('o')}@t.test`, password: 'Passw0rd!' } });
+  const reg2 = await t.call('POST', '/api/auth/register-owner', { body: { name: 'No Trial', email: `${t.unique('o')}@t.test`, phone: '+966500000000', password: 'Passw0rd!' } });
   const r2 = await t.call('POST', '/api/onboarding/restaurant', { token: reg2.body.data.token, body: { name: `NoTrial ${t.unique('')}`, planCode: 'business' } });
   const row2 = t.db.prepare('SELECT * FROM subscriptions WHERE restaurant_id = ?').get(r2.body.data.restaurant.id);
   assert.equal(row2.status, 'expired');
   assert.equal(t.db.prepare("SELECT COUNT(*) c FROM saas_invoices WHERE restaurant_id = ? AND status = 'open'").get(r2.body.data.restaurant.id).c, 1);
   t.db.prepare("UPDATE plans SET trial_days = 14 WHERE code = 'business'").run();
 
-  assert.equal((await t.call('POST', '/api/onboarding/restaurant', { token: (await t.call('POST', '/api/auth/register-owner', { body: { name: 'Bad', email: `${t.unique('o')}@t.test`, password: 'Passw0rd!' } })).body.data.token, body: { name: 'X', planCode: 'does-not-exist' } })).status, 400);
+  assert.equal((await t.call('POST', '/api/onboarding/restaurant', { token: (await t.call('POST', '/api/auth/register-owner', { body: { name: 'Bad', email: `${t.unique('o')}@t.test`, phone: '+966500000000', password: 'Passw0rd!' } })).body.data.token, body: { name: 'X', planCode: 'does-not-exist' } })).status, 400);
 });
 
 test('paid upgrade end-to-end: invoice -> provider checkout -> verified webhook -> active; price locked; duplicates harmless; ledgers separate', async () => {

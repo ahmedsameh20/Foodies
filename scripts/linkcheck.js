@@ -41,7 +41,8 @@ async function crawl(files, urlOf) {
 (async () => {
   const pub = path.join(root, 'public');
   const html = fs.readdirSync(pub).filter((f) => f.endsWith('.html')).map((f) => path.join(pub, f));
-  const js = fs.readdirSync(path.join(pub, 'js')).map((f) => path.join(pub, 'js', f));
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const js = walk(path.join(pub, 'js')); // includes js/locales/<lang>/*.js
   await crawl(html, (f) => `${base}/${path.basename(f)}`);
   await crawl(js, () => `${base}/`); // links rendered by JS use absolute paths
   const legacyDir = path.join(root, 'legacy');

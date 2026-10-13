@@ -56,6 +56,26 @@ Dashboard (live statistics + charts) · Restaurants (search, filter, paginate, a
 
 **Tenant addressing** (all work today without wildcard DNS except the subdomain form): `/restaurant/<slug>` · `/r/<slug>` · `https://<slug>.<TENANT_BASE_DOMAIN>` · an admin-assigned custom domain. Setting `TENANT_BASE_DOMAIN` plus wildcard DNS/TLS later turns on subdomains with no code change; the host only selects which *public* page is shown.
 
+## Menu, languages, stock and extras
+
+Everything about a dish is managed in **Dashboard → Menu**. Menu expands inside the dashboard sidebar (no second panel) into: + Add new dish ·
+All dishes (grouped by category, with search and filters) · Categories · Availability & stock · Discounts & offers · Add-ons & extras · Menu settings.
+
+* **Arabic and English for every dish** - name and description in both languages, entered by the owner (nothing is machine-translated);
+  customers see the language they browse in (header switcher, RTL for Arabic) through cart, checkout and order tracking - and the dashboards, admin panel and legal pages are bilingual too - with a fallback
+  to the other language when a translation is missing.
+* **Original and discounted price** - the dish shows the original price struck through and the discounted price is what is charged.
+* **Stock** - optional per dish; orders cannot exceed it, concurrent orders cannot oversell, and cancellations / failed payments give the
+  units back exactly once. Existing dishes stay unlimited.
+* **Extras** - the restaurant defines priced, bilingual extras per dish (optional or required groups, maximum quantity per extra);
+  customers pick them and can add free-text **special instructions** that never change a price.
+* **General extras** - bottled water, fries, sauces ...: priced, bilingual, categorised items customers add to an order *without choosing a dish*; separate
+  cart / order lines, server-priced, optional stock (see `docs/MENU.md`).
+* **Mobile numbers** - required (and format-checked, not SMS-verified) when registering as a customer or a restaurant owner; restaurant
+  registration prefills name, mobile and email from the signed-in account.
+
+The server recomputes every price from its own data; see [`docs/MENU.md`](docs/MENU.md) for the rules, the data model and the migration.
+
 ## SaaS plans and subscriptions
 
 Plans are data, configured in *Admin → Plans*: name, description, price, billing interval (month/year), trial days, max products, staff, branches, **orders per month**, analytics / advanced-report features, bullet points, active flag. Seeded starting points (Free, Starter, Pro, Business) are just defaults — rename or change them freely; nothing in the code depends on their names.
@@ -64,7 +84,16 @@ Each restaurant has one subscription: status `TRIALING · ACTIVE · PAST_DUE · 
 
 ## Onboarding
 
-Register → create restaurant → choose plan (free / trial / invoice + payment) → payout-account setup (card payments) → **admin review** → activated. The owner sees every step's state (Done / Pending / Action needed) on `/onboarding.html` and in the dashboard.
+**Plans first:** the home page and `/plans.html` list the plans that exist in the database (price, billing period, trial, limits, features). The owner picks one, then registers; the chosen plan **code** is kept on the account by the server (never a price) and shown again, with its price, before the restaurant is created. Then: create restaurant (no branches needed) → subscription (free = active, trial = trialing, paid without trial = unpaid until the payment is confirmed) → payout-account setup (card payments) → **admin review** → activated. The owner sees every step's state (Done / Pending / Action needed) on `/onboarding.html` and in the dashboard.
+
+**Branches** are added afterwards in *Dashboard → Team & branches* (name, contact, address and coordinates picked on the OpenStreetMap map, active/inactive; up to the plan's limit, each with its own stock). A restaurant with no branches works: the dashboard shows an empty state and a checklist, and stock lives on the dishes.
+
+## Discounts, coupons and category pictures
+
+* **Automatic discounts** (*Menu → Discounts & offers*): rules for dishes, a category or the whole menu, percentage or fixed. Two separate limits: **total redemption limit** and **maximum uses per customer** (default 1), enforced by the backend from a redemption ledger (`discount_redemptions`: reserved → redeemed | released) inside the order transaction. Cancelled, rejected, failed or expired orders give the use back exactly once; duplicate webhooks cannot double count.
+* **Coupons** (second tab of the same page): codes customers type in the cart (normalised, unique per restaurant). Percentage (optional maximum discount) or fixed, optional minimum eligible subtotal, scope = entire order / all dishes / one category / selected dishes, start and end dates, total and per-customer limits, optional stacking. The cart calls `POST /api/public/restaurants/:slug/quote`, so every figure shown (eligible subtotal, coupon discount, tax, delivery, total) comes from the server and is re-checked whenever the cart changes. Orders keep the coupon code and discount that were applied; the dashboard shows redemptions, remaining capacity, unique customers and the discount granted. Precedence and accounting rules: [`docs/MENU.md`](docs/MENU.md).
+* **Category pictures**: optional image per category (PNG/JPEG/WebP ≤ 2 MB, checked by content), shown on the customer menu and in the dashboard with a placeholder fallback.
+* **Excel import** also reads workbooks saved by other tools (prefixed XML namespaces).
 
 ## Run it locally
 
@@ -87,18 +116,19 @@ No demo data exists unless you run `seed:sample` (refused when `NODE_ENV=product
 | `npm run admin:reset-2fa` | Operator recovery when an admin lost their authenticator and backup codes |
 | `npm run backup` / `npm run restore -- <folder>` | Consistent backup (+uploads) and restore for SQLite or PostgreSQL; see `docs/BACKUPS.md` |
 | `npm run sandbox:tap` | REAL Tap sandbox verification runner (needs credentials; prints TAP SANDBOX NOT VERIFIED without them) |
-| `npm test` | 155 automated tests (in-memory SQLite + a local test double of Tap + PostgreSQL-specific tests on an embedded real PostgreSQL) |
+| `npm test` | 177 automated tests (in-memory SQLite + a local test double of Tap + PostgreSQL-specific tests on an embedded real PostgreSQL) |
 | `npm run db:local` | Create/start a persistent local PostgreSQL (role, databases, `.env` DATABASE_URL); see `docs/DATABASE.md` |
 | `npm run test:pg` | The whole suite on a real PostgreSQL server (embedded PostgreSQL 18, or `TEST_DATABASE_URL`) |
 | `npm run db:sqlite-to-postgres` | One-time copy of a SQLite database into an empty PostgreSQL database |
-| `npm run build` / `check` | Syntax check + SQL-injection guard (there is no bundler: nothing to compile) |
+| `npm run build` / `check` | Syntax check + SQL-injection guard + Arabic/English dictionary check (there is no bundler: nothing to compile) |
+| `node scripts/dev-sandbox.js` | Start the app on a throw-away SQLite database (http://localhost:3100) to try the UI without touching the configured database |
 | `npm run verify` | check + tests |
 | `npm run smoke -- <url>` / `linkcheck -- <url>` | End-to-end smoke run / broken-link crawl against a running server |
 | `npm run payouts:weekly` | Cron entry for weekly payouts (the server also runs it hourly; duplicates are impossible) |
 
 ## Documentation
 
-[`docs/PAYMENTS.md`](docs/PAYMENTS.md) — Tap setup, webhook URL, restaurant payouts, refunds, sandbox → live · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — environment, TLS, Docker, backups, wildcard domains · [`docs/DATABASE.md`](docs/DATABASE.md) — **why SQLite is not the right production database for a multi-tenant SaaS, and how to move to PostgreSQL** · [`docs/SECURITY.md`](docs/SECURITY.md) — review and residual risks · [`docs/BACKUPS.md`](docs/BACKUPS.md) · [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — final pass/fail report and verdict.
+[`docs/MENU.md`](docs/MENU.md) — **menu, Arabic/English, stock, discounts, coupons, extras, phone numbers, migrations** · [`docs/PAYMENTS.md`](docs/PAYMENTS.md) — Tap setup, webhook URL, restaurant payouts, refunds, sandbox → live · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — environment, TLS, Docker, backups, wildcard domains · [`docs/DATABASE.md`](docs/DATABASE.md) — **why SQLite is not the right production database for a multi-tenant SaaS, and how to move to PostgreSQL** · [`docs/SECURITY.md`](docs/SECURITY.md) — review and residual risks · [`docs/BACKUPS.md`](docs/BACKUPS.md) · [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — final pass/fail report and verdict.
 
 ## Limitations you should know about
 
@@ -107,5 +137,5 @@ No demo data exists unless you run `seed:sample` (refused when `NODE_ENV=product
 - **Admin 2FA is implemented (TOTP + backup codes) but must be enabled by each admin before production launch.**
 - The interactive prompt of `npm run admin:create` could not be exercised in the non-interactive environment this was built in (the environment-variable mode is tested).
 - Restaurant KYC happens with Tap; an admin then links the destination id. No bank/ID documents are collected here.
-- No real-time push (order board polls every 20 s); one owner per restaurant; branches are counted and limited but orders are not routed per branch.
+- No real-time push (order board polls every 20 s); one owner per restaurant; email + password is the only sign-in method (no social or phone OTP); branches have no operating hours of their own.
 - The `Dockerfile` has not been built here (Docker unavailable). Graceful-shutdown logging is only asserted on POSIX systems.

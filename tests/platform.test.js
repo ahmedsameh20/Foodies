@@ -99,7 +99,7 @@ test('admin login, role gate and credentials: only super_admin passes /api/admin
   assert.equal((await t.call('GET', '/api/admin/dashboard')).status, 401);
   assert.equal((await t.call('POST', '/api/auth/login', { body: { email: admin.email, password: 'wrong-Password1' } })).status, 401);
   // a restaurant owner cannot promote themselves, neither by registering nor with request fields
-  const sneaky = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Eve', email: `${t.unique('eve')}@t.test`, password: 'Passw0rd!', role: 'super_admin' } });
+  const sneaky = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Eve', email: `${t.unique('eve')}@t.test`, phone: '+966500000000', password: 'Passw0rd!', role: 'super_admin' } });
   assert.equal(sneaky.body.data.user.role, 'owner');
   assert.equal((await t.call('PUT', '/api/manage/restaurant', { token: owner.token, body: { name: 'X', role: 'super_admin', userId: admin.user.id } })).status, 200);
   assert.equal(t.db.prepare('SELECT role FROM users WHERE email = ?').get(owner.email).role, 'owner');

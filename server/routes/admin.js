@@ -10,6 +10,7 @@ const payouts = require('../services/payouts');
 const ledger = require('../services/ledger');
 const subscriptions = require('../services/subscriptions');
 const { planByCode } = subscriptions;
+const { formatPlan } = require('../services/plans');
 const { audit, allSettings, setSetting } = require('../services/platform');
 const paymentAccounts = require('../services/paymentAccounts');
 const finance = require('../services/finance');
@@ -17,8 +18,10 @@ const settlements = require('../services/settlements');
 const { paymentConfigStatus } = require('../payments/provider');
 const { runReport, toCsv, REPORT_TYPES } = require('../services/reports');
 const { parseHours, validTimezone } = require('../services/hours');
+const branchesSvc = require('../services/branches');
+const { withIdempotency } = require('../services/idempotency');
 const {
-  HttpError, notFound, str, int, bool, slugify, RESERVED_SLUGS, phone, email, imageUrl, ok,
+  HttpError, notFound, str, int, bool, slugify, RESERVED_SLUGS, phone, mobile, email, imageUrl, ok,
 } = require('../utils');
 
 // ---------- owner onboarding: create the restaurant profile for a freshly registered owner ----------
@@ -34,11 +37,52 @@ function uniqueSlug(db, base) {
   return candidate;
 }
 
-onboarding.post('/restaurant', requireRole('owner'), (req, res) => {
+// The plan the owner picked before the restaurant exists. GET returns it re-validated against the plans table (null when it is gone / retired);
+// PUT changes it. Nothing is charged or activated here: the subscription is created, with the server-side price, when the restaurant is created.
+const planChoice = (db, userId) => {
+  const u = db.prepare('SELECT pending_plan_code FROM users WHERE id = ?').get(userId);
+  const plan = u && u.pending_plan_code ? db.prepare('SELECT * FROM plans WHERE code = ? AND is_active = 1').get(u.pending_plan_code) : null;
+  return plan ? formatPlan(plan) : null;
+};
+onboarding.get('/plan', requireRole('owner'), (req, res) => {
+  const plans = req.db.prepare('SELECT * FROM plans WHERE is_active = 1 ORDER BY sort_order, id').all().map(formatPlan);
+  ok(res, { plan: req.user.restaurant_id ? null : planChoice(req.db, req.user.id), plans, hasRestaurant: !!req.user.restaurant_id });
+});
+onboarding.put('/plan', requireRole('owner'), (req, res) => {
+  if (req.user.restaurant_id) throw new HttpError(409, 'already_onboarded', 'You already have a restaurant. Change your plan from the dashboard.');
+  const plan = planByCode(req.db, str(req.body?.planCode, 'planCode', { max: 30 }));
+  if (!plan || !plan.is_active) throw new HttpError(400, 'validation_error', 'planCode: that plan is not available', { field: 'planCode' });
+  req.db.prepare('UPDATE users SET pending_plan_code = ? WHERE id = ?').run(plan.code, req.user.id);
+  ok(res, { plan: planChoice(req.db, req.user.id) });
+});
+
+// Creates the restaurant, its subscription, payment account and ALL its branches in one transaction: a failure leaves nothing behind. A retry
+// with the same Idempotency-Key returns the first result (no second restaurant, no duplicate branches); without a key a repeated request is
+// refused because the owner already has a restaurant.
+onboarding.post('/restaurant', requireRole('owner'), async (req, res) => {
+  const result = await withIdempotency(req.db, { userId: req.user.id, scope: 'onboarding', key: req.get('Idempotency-Key'), body: req.body },
+    async () => ({ status: 201, body: { data: createRestaurant(req) } }));
+  if (result.replayed) res.set('Idempotent-Replay', 'true');
+  res.status(result.status).json(result.body);
+});
+
+function createRestaurant(req) {
   if (req.user.restaurant_id) throw new HttpError(409, 'already_onboarded', 'You already have a restaurant');
   const b = req.body || {};
+  const coord = (v, f, max) => {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > max) throw new HttpError(400, 'validation_error', `${f}: is not a valid coordinate`, { field: f, reason: 'invalid_coordinate', max });
+    return v;
+  };
   const tz = b.timezone || 'Asia/Riyadh';
   if (!validTimezone(tz)) throw new HttpError(400, 'validation_error', 'timezone: unknown timezone (e.g. Asia/Riyadh)', { field: 'timezone' });
+  // The OWNER's own contact details live on the account (users.name / users.phone) - one source of truth. The restaurant's business
+  // phone / email below are separate, public-facing fields. The owner may correct their name / mobile here (prefilled from the account);
+  // an account without a mobile number (created before it was required) must supply one to continue.
+  const owner = {
+    name: b.ownerName !== undefined ? str(b.ownerName, 'ownerName', { max: 100 }) : req.user.name,
+    phone: b.ownerPhone !== undefined ? mobile(b.ownerPhone, 'ownerPhone') : (req.user.phone || mobile(undefined, 'ownerPhone')),
+  };
   const data = {
     name: str(b.name, 'name', { max: 100 }),
     description: str(b.description, 'description', { max: 1000, optional: true }) || '',
@@ -49,27 +93,45 @@ onboarding.post('/restaurant', requireRole('owner'), (req, res) => {
     city: str(b.city, 'city', { max: 100, optional: true }),
     logo: imageUrl(b.logoUrl, 'logoUrl'),
     hours: b.openingHours ? JSON.stringify(parseHours(b.openingHours)) : null,
+    latitude: coord(b.latitude, 'latitude', 90),
+    longitude: coord(b.longitude, 'longitude', 180),
   };
+  if ((data.latitude === null) !== (data.longitude === null)) throw new HttpError(400, 'validation_error', 'latitude: latitude and longitude go together', { field: 'latitude', reason: 'coordinates_pair' });
+  // Branches (optional): every branch needs its own map location. They belong to the restaurant created below - never to an id from the request.
+  const rawBranches = b.branches === undefined || b.branches === null ? [] : b.branches;
+  if (!Array.isArray(rawBranches)) throw new HttpError(400, 'validation_error', 'branches: must be a list', { field: 'branches', reason: 'invalid' });
+  if (rawBranches.length > branchesSvc.MAX_BRANCHES) throw new HttpError(400, 'validation_error', `branches: at most ${branchesSvc.MAX_BRANCHES} branches`, { field: 'branches', reason: 'too_many', max: branchesSvc.MAX_BRANCHES });
+  const parsedBranches = rawBranches.map((x, i) => branchesSvc.parseBranch(x, null, { requireLocation: true, path: `branches[${i}]` }));
+  const seen = new Set();
+  parsedBranches.forEach((x, i) => {
+    const key = `${x.name.toLowerCase()}|${x.latitude.toFixed(5)}|${x.longitude.toFixed(5)}`;
+    if (seen.has(key)) throw new HttpError(400, 'validation_error', `branches[${i}].name: this branch is listed twice`, { field: `branches[${i}].name`, reason: 'duplicate' });
+    seen.add(key);
+  });
   const restaurant = tx(req.db, () => {
     const slug = uniqueSlug(req.db, b.slug ? String(b.slug) : data.name);
     // New restaurants wait for platform approval before they appear publicly or take orders. The platform
     // currency is fixed (CURRENCY), so a restaurant cannot choose its own.
     const info = req.db.prepare(
-      `INSERT INTO restaurants (slug, name, description, logo_url, phone, whatsapp, email, address, city, currency, timezone, opening_hours, owner_id, approval_status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')`)
-      .run(slug, data.name, data.description, data.logo, data.phone, data.whatsapp, data.email, data.address, data.city, config.currency, tz, data.hours, req.user.id);
+      `INSERT INTO restaurants (slug, name, description, logo_url, phone, whatsapp, email, address, city, latitude, longitude, currency, timezone, opening_hours, owner_id, approval_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')`)
+      .run(slug, data.name, data.description, data.logo, data.phone, data.whatsapp, data.email, data.address, data.city, data.latitude, data.longitude, config.currency, tz, data.hours, req.user.id);
     const rid = Number(info.lastInsertRowid);
-    const wanted = b.planCode ? planByCode(req.db, str(b.planCode, 'planCode', { max: 30 })) : null;
+    // the plan: an explicit planCode, else the one the owner picked before registering (users.pending_plan_code). Price, trial and limits
+    // always come from the plans table - never from the request.
+    const chosen = b.planCode ? str(b.planCode, 'planCode', { max: 30 }) : (req.user.pending_plan_code || null);
+    const wanted = chosen ? planByCode(req.db, chosen) : null;
     if (b.planCode && (!wanted || !wanted.is_active)) throw new HttpError(400, 'validation_error', 'planCode: that plan is not available', { field: 'planCode' });
-    const plan = wanted || planByCode(req.db, config.defaultPlan) || req.db.prepare('SELECT * FROM plans WHERE is_active = 1 ORDER BY sort_order LIMIT 1').get();
+    const plan = (wanted && wanted.is_active ? wanted : null) || planByCode(req.db, config.defaultPlan) || req.db.prepare('SELECT * FROM plans WHERE is_active = 1 ORDER BY sort_order LIMIT 1').get();
     subscriptions.startSubscription(req.db, rid, plan);
     req.db.prepare('INSERT INTO restaurant_payment_accounts (restaurant_id, payment_provider) VALUES (?,?)').run(rid, config.paymentProvider);
-    req.db.prepare('UPDATE users SET restaurant_id = ? WHERE id = ?').run(rid, req.user.id);
+    req.db.prepare('UPDATE users SET restaurant_id = ?, name = ?, phone = ?, pending_plan_code = NULL WHERE id = ?').run(rid, owner.name, owner.phone, req.user.id);
+    for (const x of parsedBranches) branchesSvc.insertBranch(req.db, rid, x);
     return req.db.prepare('SELECT id, slug, name, approval_status FROM restaurants WHERE id = ?').get(rid);
   });
-  logger.info('restaurant.created', { restaurantId: restaurant.id, ownerId: req.user.id });
-  ok(res, { restaurant }, 201);
-});
+  logger.info('restaurant.created', { restaurantId: restaurant.id, ownerId: req.user.id, branches: parsedBranches.length });
+  return { restaurant: { ...restaurant, branchCount: parsedBranches.length } };
+}
 
 // ---------- platform admin ----------
 const admin = express.Router();

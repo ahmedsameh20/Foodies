@@ -3,32 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Help & reports | Foodies</title>
+<title data-i18n="report.title">Help & reports | Foodies</title>
 <link rel="icon" href="/Images/Restaurants/download.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
 <main id="main" class="wrap" style="max-width:820px">
-  <h1>Help &amp; reports</h1>
+  <h1 data-i18n="report.heading">Help &amp; reports</h1>
   <div id="whatsapp"></div>
   <div class="card">
-    <h2>Report a problem</h2>
+    <h2 data-i18n="report.formTitle">Report a problem</h2>
     <form id="form" novalidate>
       <div class="form-alert"></div>
       <div class="row">
-        <div class="field"><label for="category">What is it about?</label>
-          <select id="category" name="category">
-            <option value="order">An order</option><option value="payment">A payment</option><option value="food">The food</option>
-            <option value="restaurant">A restaurant</option><option value="account">My account</option><option value="other">Something else</option>
+        <div class="field"><label for="category" data-i18n="report.about">What is it about?</label>
+          <select id="category" name="category" data-field="category">
+            <option value="order" data-i18n="report.cat.order">An order</option><option value="payment" data-i18n="report.cat.payment">A payment</option><option value="food" data-i18n="report.cat.food">The food</option>
+            <option value="restaurant" data-i18n="report.cat.restaurant">A restaurant</option><option value="account" data-i18n="report.cat.account">My account</option><option value="other" data-i18n="report.cat.other">Something else</option>
           </select></div>
-        <div class="field"><label for="orderId">Order (optional)</label><select id="orderId" name="orderId"><option value="">&mdash; none &mdash;</option></select></div>
+        <div class="field"><label for="orderId" data-i18n="report.orderOptional">Order (optional)</label><select id="orderId" name="orderId" data-field="orderId"><option value="" data-i18n="report.none">&mdash; none &mdash;</option></select></div>
       </div>
-      <div class="field"><label for="subject">Subject</label><input id="subject" name="subject" maxlength="150" required></div>
-      <div class="field"><label for="description">Describe the problem</label><textarea id="description" name="description" maxlength="3000" required></textarea></div>
-      <button class="btn" type="submit">Send report</button>
+      <div class="field"><label for="subject" data-i18n="report.subject">Subject</label><input id="subject" name="subject" data-field="subject" maxlength="150" required></div>
+      <div class="field"><label for="description" data-i18n="report.describe">Describe the problem</label><textarea id="description" name="description" data-field="description" maxlength="3000" required></textarea></div>
+      <button class="btn" type="submit" data-i18n="report.send">Send report</button>
     </form>
   </div>
-  <h2 style="margin-top:2rem">My reports</h2>
+  <h2 style="margin-top:2rem" data-i18n="report.mine">My reports</h2>
   <div id="list"></div>
 </main>
 <script type="module" src="/js/report.js"></script>

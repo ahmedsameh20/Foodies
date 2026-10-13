@@ -27,7 +27,7 @@ function step(name, ok, detail = '') {
   const health = await call('GET', '/api/health');
   step('health endpoint', health.status === 200 && health.json.data.database === 'ok', health.text);
 
-  const owner = await call('POST', '/api/auth/register-owner', { body: { name: 'Smoke Owner', email: `smoke.owner.${stamp}@example.test`, password: pw } });
+  const owner = await call('POST', '/api/auth/register-owner', { body: { name: 'Smoke Owner', email: `smoke.owner.${stamp}@example.test`, phone: '+966500000000', password: pw } });
   step('owner registers', owner.status === 201, owner.text);
   const ot = owner.json.data.token;
   const rest = await call('POST', '/api/onboarding/restaurant', { token: ot, body: { name: `Smoke Grill ${stamp}`, city: 'Testville' } });
@@ -37,7 +37,7 @@ function step(name, ok, detail = '') {
   step('menu item created', prod.status === 201, prod.text);
   step('unapproved restaurant is not public', (await call('GET', `/api/public/restaurants/${slug}`)).status === 404);
 
-  const cust = await call('POST', '/api/auth/register', { body: { name: 'Smoke Customer', email: `smoke.cust.${stamp}@example.test`, password: pw } });
+  const cust = await call('POST', '/api/auth/register', { body: { name: 'Smoke Customer', email: `smoke.cust.${stamp}@example.test`, phone: '+966500000000', password: pw } });
   const ct = cust.json.data.token;
   step('anonymous blocked from the dashboard API (401)', (await call('GET', '/api/manage/orders')).status === 401);
   step('customer blocked from the dashboard API (403)', (await call('GET', '/api/manage/orders', { token: ct })).status === 403);
@@ -71,7 +71,7 @@ function step(name, ok, detail = '') {
     step('cash commission receivable recorded', earn.status === 200 && earn.json.data.codCommissionDueCents > 0, earn.text);
     const payments = await call('GET', '/api/admin/payments?method=cod', { token: at });
     step('admin sees the cash payment', payments.status === 200 && payments.json.data.payments.some((p) => p.orderId === oid), payments.text);
-    const other = await call('POST', '/api/auth/register-owner', { body: { name: 'Other Owner', email: `smoke.other.${stamp}@example.test`, password: pw } });
+    const other = await call('POST', '/api/auth/register-owner', { body: { name: 'Other Owner', email: `smoke.other.${stamp}@example.test`, phone: '+966500000000', password: pw } });
     await call('POST', '/api/onboarding/restaurant', { token: other.json.data.token, body: { name: `Other Place ${stamp}` } });
     step('another restaurant cannot read the order (404)', (await call('GET', `/api/manage/orders/${oid}`, { token: other.json.data.token })).status === 404);
   } else {

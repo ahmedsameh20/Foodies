@@ -3,26 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Create account | Foodies</title>
+<title data-i18n="register.title">Create account | Foodies</title>
 <link rel="icon" href="/Images/Restaurants/download.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
 <main id="main" class="narrow">
   <div class="card">
-    <h1>Create your account</h1>
-    <div role="radiogroup" aria-label="Account type" class="row" id="kind" style="margin-bottom:1rem">
-      <label class="card check" style="margin:0"><input type="radio" name="kind" value="customer" checked> I want to order food</label>
-      <label class="card check" style="margin:0"><input type="radio" name="kind" value="owner"> I run a restaurant</label>
+    <h1 data-i18n="register.heading">Create your account</h1>
+    <div id="signed-in-note"></div>
+    <div id="plan-note"></div>
+    <div role="radiogroup" data-i18n-aria-label="register.accountType" aria-label="Account type" class="row" id="kind" style="margin-bottom:1rem">
+      <label class="card check" style="margin:0"><input type="radio" name="kind" value="customer" checked> <span data-i18n="register.kindCustomer">I want to order food</span></label>
+      <label class="card check" style="margin:0"><input type="radio" name="kind" value="owner"> <span data-i18n="register.kindOwner">I run a restaurant</span></label>
     </div>
     <form id="form" novalidate>
       <div class="form-alert"></div>
-      <div class="field"><label for="name">Full name</label><input id="name" name="name" autocomplete="name" required maxlength="100"></div>
-      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" required></div>
-      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8"><div class="hint">At least 8 characters, with letters and numbers.</div></div>
-      <button class="btn block" type="submit">Create account</button>
+      <div class="field"><label for="name" data-i18n="field.fullName">Full name</label><input id="name" name="name" autocomplete="name" required maxlength="100"></div>
+      <div class="field"><label for="email" data-i18n="field.email">Email</label><input id="email" name="email" type="email" autocomplete="email" required></div>
+      <div id="phone-field"></div>
+      <div class="field"><label for="password" data-i18n="field.password">Password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8"><div class="hint" data-i18n="register.passwordHint">At least 8 characters, with letters and numbers.</div></div>
+      <button class="btn block" type="submit" data-i18n="register.submit">Create account</button>
     </form>
-    <p class="small muted" style="margin-top:1rem">Already registered? <a href="/login.html">Sign in</a></p>
+    <p class="small muted" style="margin-top:1rem"><span data-i18n="register.haveAccount">Already registered?</span> <a href="/login.html" data-i18n="nav.signIn">Sign in</a></p>
   </div>
 </main>
 <script type="module" src="/js/register.js"></script>

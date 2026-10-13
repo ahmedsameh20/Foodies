@@ -8,7 +8,7 @@ after(async () => { await t.close(); });
 
 test('registers a customer and returns a token + sanitized user', async () => {
   const email = `${t.unique('a')}@t.test`;
-  const r = await t.call('POST', '/api/auth/register', { body: { name: 'Ann', email, password: 'Passw0rd!' } });
+  const r = await t.call('POST', '/api/auth/register', { body: { name: 'Ann', email, phone: '+966500000000', password: 'Passw0rd!' } });
   assert.equal(r.status, 201);
   assert.equal(r.body.data.user.role, 'customer');
   assert.ok(r.body.data.token);
@@ -18,7 +18,7 @@ test('registers a customer and returns a token + sanitized user', async () => {
 
 test('registration ignores a client-supplied role (no privilege escalation)', async () => {
   const r = await t.call('POST', '/api/auth/register', {
-    body: { name: 'Mallory', email: `${t.unique('m')}@t.test`, password: 'Passw0rd!', role: 'super_admin', restaurantId: 1 },
+    body: { name: 'Mallory', email: `${t.unique('m')}@t.test`, phone: '+966500000000', password: 'Passw0rd!', role: 'super_admin', restaurantId: 1 },
   });
   assert.equal(r.status, 201);
   assert.equal(r.body.data.user.role, 'customer');
@@ -27,19 +27,19 @@ test('registration ignores a client-supplied role (no privilege escalation)', as
 
 test('rejects duplicate email, weak password and malformed email', async () => {
   const email = `${t.unique('d')}@t.test`;
-  await t.call('POST', '/api/auth/register', { body: { name: 'Dee', email, password: 'Passw0rd!' } });
-  const dup = await t.call('POST', '/api/auth/register', { body: { name: 'Dee', email: email.toUpperCase(), password: 'Passw0rd!' } });
+  await t.call('POST', '/api/auth/register', { body: { name: 'Dee', email, phone: '+966500000000', password: 'Passw0rd!' } });
+  const dup = await t.call('POST', '/api/auth/register', { body: { name: 'Dee', email: email.toUpperCase(), phone: '+966500000000', password: 'Passw0rd!' } });
   assert.equal(dup.status, 409);
-  const weak = await t.call('POST', '/api/auth/register', { body: { name: 'W', email: `${t.unique('w')}@t.test`, password: 'short' } });
+  const weak = await t.call('POST', '/api/auth/register', { body: { name: 'W', email: `${t.unique('w')}@t.test`, phone: '+966500000000', password: 'short' } });
   assert.equal(weak.status, 400);
   assert.equal(weak.body.error.code, 'validation_error');
-  const badMail = await t.call('POST', '/api/auth/register', { body: { name: 'W', email: 'nope', password: 'Passw0rd!' } });
+  const badMail = await t.call('POST', '/api/auth/register', { body: { name: 'W', email: 'nope', phone: '+966500000000', password: 'Passw0rd!' } });
   assert.equal(badMail.status, 400);
 });
 
 test('login succeeds with correct credentials and fails identically for bad email / bad password', async () => {
   const email = `${t.unique('l')}@t.test`;
-  await t.call('POST', '/api/auth/register', { body: { name: 'Lee', email, password: 'Passw0rd!' } });
+  await t.call('POST', '/api/auth/register', { body: { name: 'Lee', email, phone: '+966500000000', password: 'Passw0rd!' } });
   const ok = await t.call('POST', '/api/auth/login', { body: { email, password: 'Passw0rd!' } });
   assert.equal(ok.status, 200);
   const wrongPw = await t.call('POST', '/api/auth/login', { body: { email, password: 'Wrong1234' } });
@@ -77,7 +77,7 @@ test('malformed JSON and unknown endpoints return the JSON error envelope', asyn
 
 test('owner onboarding creates a restaurant, links the owner, assigns the Free plan and a unique slug', async () => {
   const email = `${t.unique('o')}@t.test`;
-  const reg = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Owen', email, password: 'Passw0rd!' } });
+  const reg = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Owen', email, phone: '+966500000000', password: 'Passw0rd!' } });
   const token = reg.body.data.token;
   // Before onboarding, manage endpoints say onboarding is required.
   const early = await t.call('GET', '/api/manage/restaurant', { token });
@@ -95,7 +95,7 @@ test('owner onboarding creates a restaurant, links the owner, assigns the Free p
   assert.equal(mine.body.data.subscription.plan.code, 'free');
 
   // A second owner choosing the same name gets a different slug.
-  const o2 = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Pia', email: `${t.unique('o')}@t.test`, password: 'Passw0rd!' } });
+  const o2 = await t.call('POST', '/api/auth/register-owner', { body: { name: 'Pia', email: `${t.unique('o')}@t.test`, phone: '+966500000000', password: 'Passw0rd!' } });
   const b = await t.call('POST', '/api/onboarding/restaurant', { token: o2.body.data.token, body: { name: 'Pasta Place' } });
   assert.equal(b.body.data.restaurant.slug, 'pasta-place-2');
   // new restaurants wait for platform approval before they are public

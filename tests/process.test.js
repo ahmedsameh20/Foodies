@@ -59,7 +59,7 @@ test('production process: migrate, create admin, boot, serve, log safely, shut d
     assert.match(home.headers.get('content-security-policy'), /upgrade-insecure-requests/);
 
     const SECRET_PW = 'Zx9-Very-Secret-Pw!';
-    const reg = await j('POST', '/api/auth/register', { name: 'Log Tester', email: 'log@example.com', password: SECRET_PW });
+    const reg = await j('POST', '/api/auth/register', { name: 'Log Tester', email: 'log@example.com', phone: '+966500000000', password: SECRET_PW });
     assert.equal(reg.status, 201);
     assert.match(reg.headers.getSetCookie().join(';'), /Secure/i); // cookie is Secure in production
     await j('POST', '/api/auth/login', { email: 'log@example.com', password: 'WrongPassw0rd' });

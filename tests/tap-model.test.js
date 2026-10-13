@@ -169,6 +169,8 @@ const dueNow = (o) => { // the paid period has ended: the lifecycle job issues t
 
 test('card-on-file renewal is OFF unless enabled; saving a card needs the flag and a phone number', async () => {
   const { o, invoice } = await ownerWithOpenInvoice('Off Bistro');
+  // owners now register with a mobile number; the phone-required rule only applies to an owner account created before that existed
+  t.db.prepare('UPDATE users SET phone = NULL WHERE restaurant_id = ?').run(o.restaurant.id);
   assert.equal(t.config.saasAutoRenewal, false);
   t.config.saasAutoRenewal = true;
   try {

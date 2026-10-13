@@ -131,6 +131,23 @@ module.exports = {
   },
   whatsappNumber: whatsappDigits,
 
+  // ---- maps & address search (OpenStreetMap). No API key is required or used by default.
+  // Tiles: the public OpenStreetMap tile server is fine for light use (see https://operations.osmfoundation.org/policies/tiles/);
+  // set MAP_TILE_URL to your own / a commercial tile provider for production traffic.
+  map: {
+    tileUrl: env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: env.MAP_ATTRIBUTION || '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+  },
+  // Address search: any Nominatim-compatible API. Empty GEOCODER_URL switches address search off (the map can still be clicked).
+  // The public nominatim.openstreetmap.org service has a strict usage policy (1 request / second, no autocomplete / bulk use).
+  geocoder: {
+    url: env.GEOCODER_URL !== undefined ? env.GEOCODER_URL.trim() : 'https://nominatim.openstreetmap.org',
+    userAgent: env.GEOCODER_USER_AGENT || 'FoodiesMarketplace/1.0 (restaurant onboarding)',
+    email: env.GEOCODER_EMAIL || '',
+    countryCodes: (env.GEOCODER_COUNTRY_CODES || '').replace(/s+/g, ''),
+    minIntervalMs: int(env.GEOCODER_MIN_INTERVAL_MS, 1100),
+  },
+
   mail: {
     host: env.SMTP_HOST || '',
     port: int(env.SMTP_PORT, 587),

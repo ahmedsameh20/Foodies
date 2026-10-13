@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="plans.title">Plans for restaurants | Foodies</title>
+<link rel="icon" href="/Images/Restaurants/download.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main id="main" class="wrap section">
+  <h1 data-i18n="plans.heading">Choose a plan for your restaurant</h1>
+  <p class="muted" data-i18n="plans.intro">Compare the plans, pick the one that fits, then create your account. You can change plan later from your dashboard.</p>
+  <div id="period" class="plan-period" role="radiogroup" data-i18n-aria-label="plans.billingPeriod" aria-label="Billing period" hidden></div>
+  <div id="plans"><div class="spinner" role="status" aria-label="Loading"></div></div>
+  <p class="small muted" style="margin-top:1.5rem"><span data-i18n="plans.haveAccount">Already have an owner account?</span> <a id="signin-link" href="/login.html" data-i18n="nav.signIn">Sign in</a></p>
+</main>
+<script type="module" src="/js/plans.js"></script>
+</body>
+</html>

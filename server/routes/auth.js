@@ -11,7 +11,7 @@ const {
 const jwt = require('jsonwebtoken');
 const totp = require('../services/totp');
 const { sendMail } = require('../services/mailer');
-const { HttpError, str, email, password, phone, ok } = require('../utils');
+const { HttpError, fail, str, email, password, mobile, ok } = require('../utils');
 
 const router = express.Router();
 const DUMMY_HASH = bcrypt.hashSync('timing-equaliser', config.bcryptRounds);
@@ -30,14 +30,14 @@ const mailLimiter = limiter(10);
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-function createUser(db, { role, name, mail, pass, tel }) {
+function createUser(db, { role, name, mail, pass, tel, planCode = null }) {
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail)) {
     throw new HttpError(409, 'email_taken', 'An account with this email already exists');
   }
   const hash = bcrypt.hashSync(pass, config.bcryptRounds);
   const info = db.prepare(
-    'INSERT INTO users (email, password_hash, name, phone, role) VALUES (?,?,?,?,?)').run(mail, hash, name, tel, role);
-  return db.prepare('SELECT id, email, name, phone, role, restaurant_id, token_version, email_verified_at FROM users WHERE id = ?').get(info.lastInsertRowid);
+    'INSERT INTO users (email, password_hash, name, phone, role, pending_plan_code) VALUES (?,?,?,?,?,?)').run(mail, hash, name, tel, role, planCode);
+  return db.prepare('SELECT id, email, name, phone, role, restaurant_id, token_version, email_verified_at, preferred_lang FROM users WHERE id = ?').get(info.lastInsertRowid);
 }
 
 // Single-use, expiring token; only its SHA-256 is stored.
@@ -68,12 +68,21 @@ async function sendVerification(db, user) {
 function register(role) {
   return async (req, res) => {
     const b = req.body || {};
+    // An owner who picked a plan BEFORE registering: remember it on the account (server side) if it is a real, active plan. Only the code is
+    // accepted - prices always come from the plans table. An unknown / retired code is simply ignored and the owner chooses again later.
+    let planCode = null;
+    if (role === 'owner' && typeof b.planCode === 'string') {
+      const plan = req.db.prepare('SELECT code FROM plans WHERE code = ? AND is_active = 1').get(b.planCode.slice(0, 30));
+      planCode = plan ? plan.code : null;
+    }
     const user = createUser(req.db, {
+      planCode,
       role,
       name: str(b.name, 'name', { max: 100 }),
       mail: email(b.email),
       pass: password(b.password),
-      tel: b.phone ? phone(b.phone) : null,
+      // required for customers AND restaurant owners; stored in international format. Format-checked only - never reported as verified.
+      tel: mobile(b.phone, 'phone'),
     });
     const token = signToken(user);
     setSessionCookie(res, token);
@@ -213,6 +222,19 @@ router.post('/2fa/disable', requireAuth, adminOnly, authLimiter, (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => ok(res, { user: publicUser(req.user) }));
+
+// The signed-in user edits THEIR OWN name / mobile number / language (the account is taken from the session, never from the request).
+// Email is the login identity and is not editable here. Accounts created before mobile numbers were required can add theirs this way.
+router.patch('/me', requireAuth, (req, res) => {
+  const b = req.body || {};
+  const name = b.name !== undefined ? str(b.name, 'name', { max: 100 }) : req.user.name;
+  const tel = b.phone !== undefined ? mobile(b.phone, 'phone') : req.user.phone;
+  if (b.lang !== undefined && !['ar', 'en'].includes(b.lang)) fail('lang', 'must be ar or en', 'invalid');
+  const lang = b.lang !== undefined ? b.lang : (req.user.preferred_lang || null);
+  req.db.prepare('UPDATE users SET name = ?, phone = ?, preferred_lang = ? WHERE id = ?').run(name, tel, lang, req.user.id);
+  const fresh = req.db.prepare('SELECT id, email, name, phone, role, restaurant_id, email_verified_at, totp_enabled, preferred_lang FROM users WHERE id = ?').get(req.user.id);
+  ok(res, { user: publicUser(fresh) });
+});
 
 router.post('/change-password', requireAuth, authLimiter, (req, res) => {
   const b = req.body || {};

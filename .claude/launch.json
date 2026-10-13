@@ -10,6 +10,14 @@
       ],
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "sandbox",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/dev-sandbox.js"
+      ],
+      "port": 3100
     }
   ]
 }

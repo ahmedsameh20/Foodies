@@ -66,7 +66,7 @@ async function startApp({ tap = false } = {}) {
   const PASSWORD = 'Passw0rd!';
 
   async function registerCustomer(name = 'Casey Customer') {
-    const r = await call('POST', '/api/auth/register', { body: { name, email: `${unique('cust')}@t.test`, password: PASSWORD } });
+    const r = await call('POST', '/api/auth/register', { body: { name, email: `${unique('cust')}@t.test`, phone: '+966500000000', password: PASSWORD } });
     if (r.status !== 201) throw new Error(`customer register failed: ${r.text}`);
     return { token: r.body.data.token, user: r.body.data.user, password: PASSWORD };
   }
@@ -81,7 +81,7 @@ async function startApp({ tap = false } = {}) {
   // Owner + restaurant. Restaurants are approved by default (new restaurants start 'pending' in real life).
   async function createRestaurantOwner(name = 'Test Kitchen', planCode, { approve = true, payoutAccount = false } = {}) {
     const email = `${unique('owner')}@t.test`;
-    const r = await call('POST', '/api/auth/register-owner', { body: { name: 'Olive Owner', email, password: PASSWORD } });
+    const r = await call('POST', '/api/auth/register-owner', { body: { name: 'Olive Owner', email, phone: '+966500000000', password: PASSWORD } });
     if (r.status !== 201) throw new Error(`owner register failed: ${r.text}`);
     const token = r.body.data.token;
     const rest = await call('POST', '/api/onboarding/restaurant', { token, body: { name: `${name} ${unique('')}`, city: 'Testville' } });

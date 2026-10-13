@@ -185,7 +185,7 @@ test('reports reflect real orders and exclude cancelled revenue', async () => {
   assert.equal(s.revenueCents, a.totalCents);
   assert.equal(s.avgOrderCents, a.totalCents);
   const adv = (await t.call('GET', '/api/manage/reports/advanced', { token: o.token })).body.data;
-  assert.deepEqual(adv.topProducts[0], { name: 'Roast', quantity: 2, revenueCents: 2000 });
+  assert.deepEqual(adv.topProducts[0], { name: 'Roast', nameAr: '', nameEn: '', quantity: 2, revenueCents: 2000 }); // nameAr / nameEn let the dashboard show the dish in the visitor's language
   const csv = await t.call('GET', '/api/manage/reports/orders.csv', { token: o.token });
   assert.match(csv.text, /^order_number,created_at/);
   assert.equal(csv.text.trim().split('\n').length, 3);

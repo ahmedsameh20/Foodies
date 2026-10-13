@@ -9,7 +9,7 @@ after(async () => { await t.close(); });
 const get = (p) => fetch(t.base + p, { redirect: 'manual' });
 
 test('public pages and the pretty restaurant URL are served', async () => {
-  for (const p of ['/', '/index.html', '/login.html', '/register.html', '/restaurants.html', '/dashboard.html', '/admin/login', '/onboarding.html', '/orders.html', '/order.html', '/report.html', '/forgot-password.html', '/reset-password.html', '/verify-email.html', '/restaurant/any-slug', '/css/app.css', '/js/common.js']) {
+  for (const p of ['/', '/index.html', '/login.html', '/register.html', '/plans.html', '/restaurants.html', '/dashboard.html', '/admin/login', '/onboarding.html', '/orders.html', '/order.html', '/report.html', '/forgot-password.html', '/reset-password.html', '/verify-email.html', '/restaurant/any-slug', '/css/app.css', '/js/common.js']) {
     assert.equal((await get(p)).status, 200, p);
   }
   const page = await (await get('/restaurant/any-slug')).text();

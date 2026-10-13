@@ -1,8 +1,8 @@
-import { session, onSubmit, $, mountChrome } from './common.js';
+import { session, onSubmit, $, mountChrome, t, esc } from './common.js';
 import { signIn, completeMfa, safeNext } from './auth.js';
 
 mountChrome();
-if (new URLSearchParams(location.search).has('next')) $('#next-note').innerHTML = '<div class="alert info">Please sign in to open the admin panel.</div>';
+if (new URLSearchParams(location.search).has('next')) $('#next-note').innerHTML = `<div class="alert info">${esc(t('admlogin.pleaseSignIn'))}</div>`;
 
 let mfaToken = null;
 // The backend decides who is an admin (every /api/admin call and every /admin page checks the role);
@@ -11,7 +11,7 @@ function finish(user) {
   if (user.role !== 'super_admin') {
     session.clear();
     fetch('/api/auth/logout', { method: 'POST' });
-    throw new Error('This account is not a platform administrator. Use the regular sign in.');
+    throw Object.assign(new Error(t('admlogin.notAdmin')), { code: 'not_admin' });
   }
   session.set(user);
   const next = safeNext('/admin/dashboard');

@@ -67,7 +67,7 @@ test('migrations: apply to an empty database, idempotent, UTF-8 enforced; schema
   if (!need(t)) return;
   const schema = freshSchema();
   const db = openDb(pgUrl, { schema });
-  assert.deepEqual(migrate(db), ['001_schema.sql']);
+  assert.deepEqual(migrate(db), ['001_schema.sql', '002_menu_bilingual_stock_extras.sql', '003_general_extras_language.sql', '004_branches_stock_discounts.sql', '005_onboarding_redemptions_category_images.sql', '006_coupons.sql']);
   assert.deepEqual(migrate(db), []); // idempotent
   assert.equal(db.prepare('SHOW server_encoding').get().server_encoding, 'UTF8');
   const lite = openDb(':memory:');
@@ -86,6 +86,50 @@ test('migrations: apply to an empty database, idempotent, UTF-8 enforced; schema
   for (const i of liteIdx) assert.ok(pgIdx.has(i), `index ${i}`);
   // tenancy and money guarantees live in the database on PostgreSQL too: composite FKs, partial unique indexes, CHECKs, append-only ledger
   assert.ok(db.prepare("SELECT COUNT(*) AS c FROM pg_constraint WHERE contype = 'f' AND connamespace = current_schema()::regnamespace").get().c >= 40);
+  db.close();
+});
+
+test('migration 002 upgrades a PostgreSQL schema that already holds restaurants, dishes, extras and orders without touching them', (t) => {
+  if (!need(t)) return;
+  const db = openDb(pgUrl, { schema: freshSchema() });
+  db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))");
+  db.exec('BEGIN');
+  db.exec(fs.readFileSync(path.join(ROOT, 'server', 'migrations', 'postgres', '001_schema.sql'), 'utf8'));
+  db.prepare('INSERT INTO schema_migrations (name) VALUES (?)').run('001_schema.sql');
+  db.exec('COMMIT');
+  db.resetCatalog();
+  // data as the previous release stored it
+  const rid = Number(db.prepare("INSERT INTO restaurants (slug, name, currency, approval_status) VALUES ('old-grill', 'Old Grill', 'SAR', 'approved')").run().lastInsertRowid);
+  const uid = Number(db.prepare("INSERT INTO users (email, password_hash, name, role) VALUES ('c@t.test', 'h', 'Cust', 'customer')").run().lastInsertRowid);
+  const pid = Number(db.prepare('INSERT INTO products (restaurant_id, name, description, price_cents) VALUES (?,?,?,?)').run(rid, 'Mixed Grill', 'Old', 4500).lastInsertRowid);
+  const gid = Number(db.prepare('INSERT INTO option_groups (restaurant_id, product_id, name, min_select, max_select) VALUES (?,?,?,?,?)').run(rid, pid, 'Sides', 0, 2).lastInsertRowid);
+  const oid = Number(db.prepare('INSERT INTO options (restaurant_id, group_id, name, price_cents) VALUES (?,?,?,?)').run(rid, gid, 'Rice', 300).lastInsertRowid);
+  const ord = Number(db.prepare(`INSERT INTO orders (restaurant_id, customer_id, order_number, order_type, customer_name, customer_phone, subtotal_cents, tax_cents, delivery_fee_cents, total_cents, currency)
+    VALUES (?,?,1,'pickup','Cust','+966500000009',4800,0,0,4800,'SAR')`).run(rid, uid).lastInsertRowid);
+  const item = Number(db.prepare('INSERT INTO order_items (order_id, restaurant_id, product_id, product_name, unit_price_cents, quantity, line_total_cents) VALUES (?,?,?,?,?,1,4800)').run(ord, rid, pid, 'Mixed Grill', 4800).lastInsertRowid);
+  db.prepare('INSERT INTO order_item_options (order_item_id, restaurant_id, option_id, group_name, option_name, price_cents) VALUES (?,?,?,?,?,300)').run(item, rid, oid, 'Sides', 'Rice');
+
+  assert.deepEqual(migrate(db), ['002_menu_bilingual_stock_extras.sql', '003_general_extras_language.sql', '004_branches_stock_discounts.sql', '005_onboarding_redemptions_category_images.sql', '006_coupons.sql']);
+  const p = db.prepare('SELECT price_cents, original_price_cents, track_stock, stock_quantity, name_ar, name_en FROM products WHERE id = ?').get(pid);
+  assert.deepEqual({ ...p }, { price_cents: 4500, original_price_cents: null, track_stock: 0, stock_quantity: 0, name_ar: null, name_en: null });
+  assert.equal(db.prepare('SELECT max_quantity FROM options WHERE id = ?').get(oid).max_quantity, 1);
+  assert.equal(db.prepare('SELECT quantity FROM order_item_options WHERE order_item_id = ?').get(item).quantity, 1);
+  // the new constraints are enforced by PostgreSQL itself
+  assert.throws(() => db.prepare('UPDATE products SET original_price_cents = 4500 WHERE id = ?').run(pid), (e) => e.code === 'SQLITE_CONSTRAINT_CHECK'); // not above the selling price
+  assert.throws(() => db.prepare('UPDATE products SET stock_quantity = -1 WHERE id = ?').run(pid), (e) => e.code === 'SQLITE_CONSTRAINT_CHECK');
+  assert.throws(() => db.prepare('UPDATE options SET max_quantity = 0 WHERE id = ?').run(oid), (e) => e.code === 'SQLITE_CONSTRAINT_CHECK');
+  db.prepare('UPDATE products SET original_price_cents = 6000 WHERE id = ?').run(pid); // a real discount is accepted
+  assert.equal(db.prepare('SELECT original_price_cents FROM products WHERE id = ?').get(pid).original_price_cents, 6000);
+  // migration 003 (general extras, language preference) left the old order line a dish and added no data of its own
+  assert.deepEqual({ ...db.prepare('SELECT item_kind, extra_id, extra_category FROM order_items WHERE id = ?').get(item) }, { item_kind: 'dish', extra_id: null, extra_category: null });
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM restaurant_extras').get().c, 0);
+  assert.equal(db.prepare('SELECT preferred_lang FROM users WHERE id = ?').get(uid).preferred_lang, null);
+  const xid = Number(db.prepare("INSERT INTO restaurant_extras (restaurant_id, name, category, price_cents) VALUES (?, 'Water', 'drinks', 300)").run(rid).lastInsertRowid);
+  assert.throws(() => db.prepare("INSERT INTO restaurant_extras (restaurant_id, name, category, price_cents) VALUES (?, 'x', 'desserts', 1)").run(rid), (e) => e.code === 'SQLITE_CONSTRAINT_CHECK');
+  assert.throws(() => db.prepare("UPDATE users SET preferred_lang = 'fr' WHERE id = ?").run(uid), (e) => e.code === 'SQLITE_CONSTRAINT_CHECK');
+  const line = Number(db.prepare("INSERT INTO order_items (order_id, restaurant_id, product_id, item_kind, extra_id, product_name, unit_price_cents, quantity, line_total_cents) VALUES (?,?,NULL,'extra',?,'Water',300,2,600)").run(ord, rid, xid).lastInsertRowid);
+  db.prepare('DELETE FROM restaurant_extras WHERE id = ?').run(xid); // deleting an extra keeps the order line (its snapshot) and only detaches the link
+  assert.deepEqual({ ...db.prepare('SELECT extra_id, line_total_cents FROM order_items WHERE id = ?').get(line) }, { extra_id: null, line_total_cents: 600 });
   db.close();
 });
 
@@ -289,7 +333,7 @@ test('real processes on PostgreSQL: npm run migrate, create-admin, server boot, 
   const base = { ...process.env, NODE_ENV: 'development', DATABASE_URL: pgUrl, DATABASE_SCHEMA: schema, RATE_LIMIT: 'off', BCRYPT_ROUNDS: '4', PORT: String(53000 + Math.floor(Math.random() * 900)), PAYMENT_PROVIDER: 'none', LOG_LEVEL: 'error' };
   const run = (script, extra = {}) => spawnSync(process.execPath, [script], { cwd: ROOT, env: { ...base, ...extra }, encoding: 'utf8' });
   const m1 = run('server/migrate.js');
-  assert.match(m1.stdout, /Applied migrations: 001_schema.sql/, m1.stderr);
+  assert.match(m1.stdout, /Applied migrations: 001_schema.sql, 002_menu_bilingual_stock_extras.sql, 003_general_extras_language.sql, 004_branches_stock_discounts.sql, 005_onboarding_redemptions_category_images.sql, 006_coupons.sql/, m1.stderr);
   assert.match(run('server/migrate.js').stdout, /up to date/);
   const adm = run('server/create-admin.js', { ADMIN_EMAIL: 'pg-admin@example.test', ADMIN_PASSWORD: 'a long passphrase 1x' });
   assert.equal(adm.status, 0, adm.stderr);

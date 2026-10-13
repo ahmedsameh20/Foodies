@@ -6,6 +6,9 @@ const logger = require('../logger');
 const { tx } = require('../db');
 const { HttpError, notFound } = require('../utils');
 const ledger = require('./ledger');
+const inventory = require('./inventory');
+const discounts = require('./discounts');
+const coupons = require('./coupons');
 const { audit } = require('./platform');
 const { ProviderError } = require('../payments/provider');
 const { mulDiv } = require('./money');
@@ -85,6 +88,9 @@ function failPayment(db, paymentId, reason, orderReason = 'payment_failed') {
     if (order.status === 'awaiting_payment') {
       db.prepare("UPDATE orders SET status = 'cancelled', payment_status = 'failed', cancel_reason = ?, expires_at = NULL WHERE id = ?").run(orderReason, order.id);
       db.prepare('INSERT INTO order_status_history (order_id, restaurant_id, status) VALUES (?,?,?)').run(order.id, order.restaurant_id, 'cancelled');
+      inventory.restoreForOrder(db, order.id, order.restaurant_id); // the unpaid order held stock; give it back (idempotent)
+      discounts.releaseForOrder(db, order.id); // ...and its discount uses (idempotent)
+      coupons.releaseForOrder(db, order.id); // ...and its coupon use (idempotent)
     }
     return { changed: true };
   });

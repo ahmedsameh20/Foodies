@@ -29,5 +29,12 @@ for (const f of walk(path.join(root, 'server/routes'))) {
   const bad = src.match(/\.(prepare|exec)\(\s*`[^`]*\$\{\s*req\./g);
   if (bad) { failures++; console.error(`Possible SQL interpolation of req.* in ${path.relative(root, f)}`); }
 }
+// Arabic / English dictionaries must stay in step and every translation key used by the frontend must exist.
+try {
+  process.stdout.write(execFileSync(process.execPath, [path.join(root, 'scripts', 'check-i18n.js')], { stdio: 'pipe' }).toString());
+} catch (e) {
+  failures++;
+  console.error(String(e.stderr || e.stdout || e.message));
+}
 if (failures) { console.error(`${failures} problem(s) found`); process.exit(1); }
 console.log('check: all files parse; no request data interpolated into SQL');

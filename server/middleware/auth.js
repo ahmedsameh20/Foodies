@@ -61,7 +61,7 @@ function authenticate(req, res, next) {
   // a short-lived 2FA challenge token is NOT a session
   if (payload.purpose) return invalid();
   const user = req.db.prepare(
-    'SELECT id, email, name, phone, role, restaurant_id, is_active, token_version, email_verified_at, totp_enabled FROM users WHERE id = ?').get(payload.sub);
+    'SELECT id, email, name, phone, role, restaurant_id, is_active, token_version, email_verified_at, totp_enabled, preferred_lang, pending_plan_code FROM users WHERE id = ?').get(payload.sub);
   if (!user || !user.is_active || (user.token_version || 0) !== (payload.tv || 0)) return invalid();
   // CSRF defence for cookie-authenticated, state-changing requests (checked only for a VALID session)
   if (cookieToken && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameSiteRequest(req)) {
@@ -115,8 +115,9 @@ const requireOwner = (req, res, next) => {
 };
 
 const publicUser = (u) => ({
-  id: u.id, email: u.email, name: u.name, phone: u.phone || null,
+  id: u.id, email: u.email, name: u.name, phone: u.phone || null, phoneMissing: !u.phone,
   role: u.role, restaurantId: u.restaurant_id || null, emailVerified: Boolean(u.email_verified_at),
+  lang: u.preferred_lang || null, // the language this person last chose (follows them across devices); null = never chose
   ...(u.role === 'super_admin' ? { totpEnabled: Boolean(u.totp_enabled) } : {}),
 });
 

@@ -1,13 +1,14 @@
 const express = require('express');
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const config = require('../config');
 const { tx } = require('../db');
 const { tenantContext, requireOwner, publicUser } = require('../middleware/auth');
 const { enforceLimit, requireFeature, formatPlan } = require('../services/plans');
 const subscriptions = require('../services/subscriptions');
+const catalog = require('../services/catalog');
+const inventory = require('../services/inventory');
+const discounts = require('../services/discounts');
+const coupons = require('../services/coupons');
 const { subscriptionView } = subscriptions;
 const { ACTIVE, STATUSES, formatOrder, loadItems, changeStatus } = require('../services/orders');
 const payments = require('../services/payments');
@@ -17,6 +18,7 @@ const paymentAccounts = require('../services/paymentAccounts');
 const finance = require('../services/finance');
 const settlements = require('../services/settlements');
 const { audit } = require('../services/platform');
+const uploads = require('../services/uploads');
 const { parseHours, validTimezone } = require('../services/hours');
 const {
   HttpError, notFound, str, int, bool, email, password, phone, imageUrl, ok,
@@ -27,9 +29,16 @@ const {
 // ever used together with that filter.
 const router = express.Router();
 router.use(tenantContext);
+// branches, per-branch stock, discount rules, Excel import / export
+router.use(require('./manageMenu'));
+
+// Ids from the URL: only a positive safe integer can match a row. Anything else (3.14, 1e999, abc ...) becomes 0, which matches nothing,
+// so a hostile id is a plain 404 and never reaches the database as a value of the wrong type.
+const idOf = (v) => { const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : 0; };
 
 const fmtRestaurant = (r) => ({
   id: r.id, slug: r.slug, name: r.name, description: r.description, logoUrl: r.logo_url, coverUrl: r.cover_url,
+  nameAr: r.name_ar || '', nameEn: r.name_en || '', descriptionAr: r.description_ar || '', descriptionEn: r.description_en || '',
   phone: r.phone, whatsapp: r.whatsapp, email: r.email, address: r.address, city: r.city, currency: r.currency,
   latitude: r.latitude, longitude: r.longitude, timezone: r.timezone,
   openingHours: r.opening_hours ? JSON.parse(r.opening_hours) : null,
@@ -37,10 +46,7 @@ const fmtRestaurant = (r) => ({
   acceptingOrders: !!r.accepting_orders, isActive: !!r.is_active, isDemo: !!r.is_demo,
   approvalStatus: r.approval_status, rejectionReason: r.rejection_reason,
 });
-const fmtProduct = (p) => ({
-  id: p.id, categoryId: p.category_id, name: p.name, description: p.description,
-  priceCents: p.price_cents, imageUrl: p.image_url, isAvailable: !!p.is_available,
-});
+const fmtProduct = (p, extra) => catalog.formatProduct(p, extra);
 
 const paymentAccountView = (db, restaurantId, provider) => paymentAccounts.view(db, restaurantId, provider);
 
@@ -68,6 +74,11 @@ router.put('/restaurant', requireOwner, (req, res) => {
   const next = {
     name: b.name !== undefined ? str(b.name, 'name', { max: 100 }) : cur.name,
     description: b.description !== undefined ? (str(b.description, 'description', { max: 1000, optional: true }) || '') : cur.description,
+    // optional Arabic / English versions of the name and description (the canonical `name` / `description` remain the fallback)
+    name_ar: b.nameAr !== undefined ? str(b.nameAr, 'nameAr', { max: 100, optional: true }) : cur.name_ar,
+    name_en: b.nameEn !== undefined ? str(b.nameEn, 'nameEn', { max: 100, optional: true }) : cur.name_en,
+    description_ar: b.descriptionAr !== undefined ? str(b.descriptionAr, 'descriptionAr', { max: 1000, optional: true }) : cur.description_ar,
+    description_en: b.descriptionEn !== undefined ? str(b.descriptionEn, 'descriptionEn', { max: 1000, optional: true }) : cur.description_en,
     logo_url: b.logoUrl !== undefined ? imageUrl(b.logoUrl, 'logoUrl') : cur.logo_url,
     cover_url: b.coverUrl !== undefined ? imageUrl(b.coverUrl, 'coverUrl') : cur.cover_url,
     phone: b.phone !== undefined ? phone(b.phone, 'phone', { optional: true }) : cur.phone,
@@ -85,29 +96,42 @@ router.put('/restaurant', requireOwner, (req, res) => {
     accepting_orders: b.acceptingOrders !== undefined ? (bool(b.acceptingOrders, 'acceptingOrders') ? 1 : 0) : cur.accepting_orders,
   };
   req.db.prepare(
-    `UPDATE restaurants SET name=?, description=?, logo_url=?, cover_url=?, phone=?, whatsapp=?, email=?, address=?, city=?,
+    `UPDATE restaurants SET name=?, description=?, name_ar=?, name_en=?, description_ar=?, description_en=?, logo_url=?, cover_url=?, phone=?, whatsapp=?, email=?, address=?, city=?,
        latitude=?, longitude=?, timezone=?, opening_hours=?, tax_rate_bp=?, delivery_fee_cents=?, min_order_cents=?, accepting_orders=? WHERE id=?`)
-    .run(next.name, next.description, next.logo_url, next.cover_url, next.phone, next.whatsapp, next.email, next.address, next.city,
+    .run(next.name, next.description, next.name_ar, next.name_en, next.description_ar, next.description_en, next.logo_url, next.cover_url, next.phone, next.whatsapp, next.email, next.address, next.city,
       next.latitude, next.longitude, next.timezone, next.opening_hours, next.tax_rate_bp, next.delivery_fee_cents,
       next.min_order_cents, next.accepting_orders, cur.id);
   ok(res, { restaurant: fmtRestaurant(req.db.prepare('SELECT * FROM restaurants WHERE id = ?').get(cur.id)) });
 });
 
 // ---------------- categories ----------------
+const fmtCategory = (c) => ({ id: c.id, name: c.name, nameAr: c.name_ar || '', nameEn: c.name_en || '', sortOrder: c.sort_order, imageUrl: c.image_url || null, ...(c.item_count !== undefined ? { itemCount: c.item_count } : {}) });
+
+// Bilingual like dishes: nameAr + nameEn together (both required), or the legacy single `name`. `name` always stays filled (English
+// text, else the legacy text) so it can serve as the fallback and keeps its per-restaurant uniqueness.
+function parseCategoryNames(b, cur) {
+  if (b.nameAr !== undefined || b.nameEn !== undefined) {
+    const ar = str(b.nameAr !== undefined ? b.nameAr : cur?.name_ar, 'nameAr', { max: 60 });
+    const en = str(b.nameEn !== undefined ? b.nameEn : cur?.name_en, 'nameEn', { max: 60 });
+    return { name: en, name_ar: ar, name_en: en };
+  }
+  return { name: str(b.name, 'name', { max: 60 }), name_ar: null, name_en: null };
+}
+
 router.get('/categories', (req, res) => {
   const rows = req.db.prepare(
-    `SELECT c.id, c.name, c.sort_order, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.restaurant_id = c.restaurant_id) AS item_count
+    `SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.restaurant_id = c.restaurant_id) AS item_count
      FROM categories c WHERE c.restaurant_id = ? ORDER BY c.sort_order, c.name`).all(req.restaurant.id);
-  ok(res, { categories: rows.map((c) => ({ id: c.id, name: c.name, sortOrder: c.sort_order, itemCount: c.item_count })) });
+  ok(res, { categories: rows.map(fmtCategory) });
 });
 
 router.post('/categories', requireOwner, (req, res) => {
-  const name = str(req.body?.name, 'name', { max: 60 });
+  const n = parseCategoryNames(req.body || {}, null);
   const sort = int(req.body?.sortOrder, 'sortOrder', { optional: true, max: 10000 }) ?? 0;
   try {
-    const info = req.db.prepare('INSERT INTO categories (restaurant_id, name, sort_order) VALUES (?,?,?)')
-      .run(req.restaurant.id, name, sort);
-    ok(res, { category: { id: Number(info.lastInsertRowid), name, sortOrder: sort } }, 201);
+    const info = req.db.prepare('INSERT INTO categories (restaurant_id, name, name_ar, name_en, sort_order) VALUES (?,?,?,?,?)')
+      .run(req.restaurant.id, n.name, n.name_ar, n.name_en, sort);
+    ok(res, { category: fmtCategory({ id: Number(info.lastInsertRowid), ...n, sort_order: sort }) }, 201);
   } catch (e) {
     if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'duplicate', 'A category with that name already exists');
     throw e;
@@ -115,13 +139,14 @@ router.post('/categories', requireOwner, (req, res) => {
 });
 
 router.put('/categories/:id', requireOwner, (req, res) => {
-  const name = str(req.body?.name, 'name', { max: 60 });
+  const id = idOf(req.params.id);
+  const cur = req.db.prepare('SELECT * FROM categories WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id);
+  if (!cur) throw notFound('Category');
+  const n = parseCategoryNames(req.body || {}, cur);
   const sort = int(req.body?.sortOrder, 'sortOrder', { optional: true, max: 10000 });
   try {
-    const info = req.db.prepare(
-      'UPDATE categories SET name = ?, sort_order = COALESCE(?, sort_order) WHERE id = ? AND restaurant_id = ?')
-      .run(name, sort, Number(req.params.id) || 0, req.restaurant.id);
-    if (!info.changes) throw notFound('Category');
+    req.db.prepare('UPDATE categories SET name = ?, name_ar = ?, name_en = ?, sort_order = COALESCE(?, sort_order) WHERE id = ? AND restaurant_id = ?')
+      .run(n.name, n.name_ar, n.name_en, sort, id, req.restaurant.id);
   } catch (e) {
     if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'duplicate', 'A category with that name already exists');
     throw e;
@@ -130,19 +155,75 @@ router.put('/categories/:id', requireOwner, (req, res) => {
 });
 
 router.delete('/categories/:id', requireOwner, (req, res) => {
-  const id = Number(req.params.id) || 0;
-  tx(req.db, () => {
-    if (!req.db.prepare('SELECT 1 FROM categories WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id)) throw notFound('Category');
+  const id = idOf(req.params.id);
+  const oldImage = tx(req.db, () => {
+    const cur = req.db.prepare('SELECT image_url FROM categories WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id);
+    if (!cur) throw notFound('Category');
+    if (req.db.prepare('SELECT 1 FROM coupons WHERE category_id = ? AND restaurant_id = ?').get(id, req.restaurant.id)) {
+      throw new HttpError(409, 'category_has_coupons', 'Delete or change the coupons that use this category first.');
+    }
     req.db.prepare('UPDATE products SET category_id = NULL WHERE category_id = ? AND restaurant_id = ?').run(id, req.restaurant.id);
     req.db.prepare('DELETE FROM categories WHERE id = ? AND restaurant_id = ?').run(id, req.restaurant.id);
+    return cur.image_url;
   });
+  uploads.removeIfOrphan(req.db, req.restaurant.id, oldImage); // the category's picture goes with it (unless a dish still uses the same file)
   ok(res, { deleted: true });
 });
 
-// ---------------- products ----------------
+// The category picture. Only this endpoint can set it (the body is the image itself, checked by content), so a category can never point at
+// an arbitrary path or at another restaurant's file. Replacing or removing the picture deletes the old file when nothing else uses it.
+router.put('/categories/:id/image', requireOwner,
+  express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: uploads.MAX_BYTES }),
+  (req, res) => {
+    const id = idOf(req.params.id);
+    const cur = req.db.prepare('SELECT * FROM categories WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id);
+    if (!cur) throw notFound('Category');
+    const url = uploads.saveImage(req.restaurant.id, req.body);
+    req.db.prepare('UPDATE categories SET image_url = ? WHERE id = ? AND restaurant_id = ?').run(url, id, req.restaurant.id);
+    if (cur.image_url !== url) uploads.removeIfOrphan(req.db, req.restaurant.id, cur.image_url);
+    ok(res, { category: fmtCategory({ ...cur, image_url: url }) });
+  });
+
+router.delete('/categories/:id/image', requireOwner, (req, res) => {
+  const id = idOf(req.params.id);
+  const cur = req.db.prepare('SELECT * FROM categories WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id);
+  if (!cur) throw notFound('Category');
+  req.db.prepare('UPDATE categories SET image_url = NULL WHERE id = ? AND restaurant_id = ?').run(id, req.restaurant.id);
+  uploads.removeIfOrphan(req.db, req.restaurant.id, cur.image_url);
+  ok(res, { category: fmtCategory({ ...cur, image_url: null }) });
+});
+
+// ---------------- products (dishes) ----------------
+// A dish carries: bilingual text, original price + optional discounted price, optional stock tracking and (via `optionGroups`)
+// the extras the restaurant offers for it. The restaurant is always req.restaurant; ids from the URL/body are only used with it.
+const PRODUCT_LIST = `SELECT p.*,
+    (SELECT COUNT(*) FROM option_groups g WHERE g.product_id = p.id AND g.restaurant_id = p.restaurant_id) AS group_count,
+    (SELECT COUNT(*) FROM options o WHERE o.restaurant_id = p.restaurant_id AND o.group_id IN
+       (SELECT id FROM option_groups WHERE product_id = p.id AND restaurant_id = p.restaurant_id)) AS extras_count
+  FROM products p`;
+// The dashboard shows the dish as stored (what the owner edits) plus what customers actually pay today: `effective` is set when a discount
+// RULE sets the price. With branches the stock figure is the total over the active branches.
+function listedProducts(req, rows) {
+  const rules = discounts.loadActiveRules(req.db, req.restaurant.id);
+  return inventory.withBranchTotals(req.db, req.restaurant.id, rows).map((p) => {
+    const eff = rules.length ? discounts.applyToProduct(p, rules) : null;
+    return fmtProduct(p, {
+      groupCount: p.group_count, extrasCount: p.extras_count,
+      effective: eff && eff.discount_rule_id ? { ruleId: eff.discount_rule_id, ruleNameAr: eff.discount_rule_name_ar, ruleNameEn: eff.discount_rule_name_en, priceCents: eff.price_cents, originalPriceCents: eff.original_price_cents } : null,
+    });
+  });
+}
+const listedProduct = (req, row) => listedProducts(req, [row])[0];
+
 router.get('/products', (req, res) => {
-  const rows = req.db.prepare('SELECT * FROM products WHERE restaurant_id = ? ORDER BY name').all(req.restaurant.id);
-  ok(res, { products: rows.map(fmtProduct) });
+  const rows = req.db.prepare(`${PRODUCT_LIST} WHERE p.restaurant_id = ? ORDER BY p.name`).all(req.restaurant.id);
+  ok(res, { products: listedProducts(req, rows) });
+});
+
+router.get('/products/:id', (req, res) => {
+  const p = req.db.prepare(`${PRODUCT_LIST} WHERE p.id = ? AND p.restaurant_id = ?`).get(idOf(req.params.id), req.restaurant.id);
+  if (!p) throw notFound('Product');
+  ok(res, { product: listedProduct(req, p), optionGroups: catalog.loadGroups(req.db, req.restaurant.id, p.id) });
 });
 
 // category_id must belong to the same restaurant (the composite FK enforces it too).
@@ -150,153 +231,239 @@ function resolveCategory(db, restaurantId, value) {
   if (value === undefined || value === null || value === '') return null;
   const id = int(value, 'categoryId', { min: 1 });
   if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND restaurant_id = ?').get(id, restaurantId)) {
-    throw new HttpError(400, 'validation_error', 'categoryId: category does not exist', { field: 'categoryId' });
+    throw new HttpError(400, 'validation_error', 'categoryId: category does not exist', { field: 'categoryId', reason: 'invalid_category' });
   }
   return id;
 }
 
+// A restaurant with branches keeps quantities per branch. The dish form's quantity maps to the only branch; with several branches the
+// quantities are set on the Availability & stock page (the dish's own figure is then not used, so it is refused rather than guessed).
+function applyFormStock(db, restaurantId, productId, body, stock, kind = 'dish') {
+  const list = inventory.activeBranches(db, restaurantId);
+  if (!list.length || body.stockQuantity === undefined) return;
+  if (list.length > 1) throw new HttpError(409, 'use_branch_stock', 'This restaurant has several branches: set quantities per branch on the Availability & stock page', { reason: 'use_branch_stock' });
+  if (stock.track_stock) inventory.updateStock(db, restaurantId, { kind, itemId: productId, branchId: list[0].id, quantity: stock.stock_quantity });
+}
+
 router.post('/products', requireOwner, (req, res) => {
   const b = req.body || {};
+  const t = catalog.parseText(b, null);
+  const price = catalog.parsePrices(b, null);
+  const stock = catalog.parseStock(b, null);
+  const groups = b.optionGroups !== undefined ? catalog.parseGroups(b.optionGroups) : null;
   const data = {
-    name: str(b.name, 'name', { max: 120 }),
-    description: str(b.description, 'description', { max: 1000, optional: true }) || '',
-    price: int(b.priceCents, 'priceCents', { max: 1e8 }),
     image: imageUrl(b.imageUrl),
     available: b.isAvailable === undefined ? true : bool(b.isAvailable, 'isAvailable'),
     category: resolveCategory(req.db, req.restaurant.id, b.categoryId),
   };
-  const product = tx(req.db, () => {
+  const id = tx(req.db, () => {
     enforceLimit(req.db, req.restaurant.id, 'menuItems'); // checked inside the tx so concurrent adds can't overshoot
     const info = req.db.prepare(
-      `INSERT INTO products (restaurant_id, category_id, name, description, price_cents, image_url, is_available)
-       VALUES (?,?,?,?,?,?,?)`)
-      .run(req.restaurant.id, data.category, data.name, data.description, data.price, data.image, data.available ? 1 : 0);
-    return req.db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid);
+      `INSERT INTO products (restaurant_id, category_id, name, description, name_ar, name_en, description_ar, description_en,
+         price_cents, original_price_cents, image_url, is_available, track_stock, stock_quantity)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(req.restaurant.id, data.category, t.name, t.description, t.name_ar, t.name_en, t.description_ar, t.description_en,
+        price.price_cents, price.original_price_cents, data.image, data.available ? 1 : 0, stock.track_stock, stock.stock_quantity);
+    const pid = Number(info.lastInsertRowid);
+    if (groups) catalog.syncGroups(req.db, req.restaurant.id, pid, groups);
+    applyFormStock(req.db, req.restaurant.id, pid, b, stock);
+    return pid;
   });
-  ok(res, { product: fmtProduct(product) }, 201);
+  const row = req.db.prepare(`${PRODUCT_LIST} WHERE p.id = ? AND p.restaurant_id = ?`).get(id, req.restaurant.id);
+  ok(res, { product: listedProduct(req, row), optionGroups: catalog.loadGroups(req.db, req.restaurant.id, id) }, 201);
 });
 
 router.put('/products/:id', requireOwner, (req, res) => {
-  const id = Number(req.params.id) || 0;
+  const id = idOf(req.params.id);
   const cur = req.db.prepare('SELECT * FROM products WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id);
   if (!cur) throw notFound('Product');
   const b = req.body || {};
+  const t = catalog.parseText(b, cur);
+  const price = catalog.parsePrices(b, cur);
+  const stock = catalog.parseStock(b, cur);
+  const groups = b.optionGroups !== undefined ? catalog.parseGroups(b.optionGroups) : null;
   const next = {
-    name: b.name !== undefined ? str(b.name, 'name', { max: 120 }) : cur.name,
-    description: b.description !== undefined ? (str(b.description, 'description', { max: 1000, optional: true }) || '') : cur.description,
-    price: b.priceCents !== undefined ? int(b.priceCents, 'priceCents', { max: 1e8 }) : cur.price_cents,
     image: b.imageUrl !== undefined ? imageUrl(b.imageUrl) : cur.image_url,
     available: b.isAvailable !== undefined ? (bool(b.isAvailable, 'isAvailable') ? 1 : 0) : cur.is_available,
     category: b.categoryId !== undefined ? resolveCategory(req.db, req.restaurant.id, b.categoryId) : cur.category_id,
   };
-  req.db.prepare(
-    `UPDATE products SET name=?, description=?, price_cents=?, image_url=?, is_available=?, category_id=?
-     WHERE id=? AND restaurant_id=?`)
-    .run(next.name, next.description, next.price, next.image, next.available, next.category, id, req.restaurant.id);
-  ok(res, { product: fmtProduct(req.db.prepare('SELECT * FROM products WHERE id = ?').get(id)) });
+  const text = t || { name: cur.name, description: cur.description, name_ar: cur.name_ar, name_en: cur.name_en, description_ar: cur.description_ar, description_en: cur.description_en };
+  tx(req.db, () => {
+    req.db.prepare(
+      `UPDATE products SET name=?, description=?, name_ar=?, name_en=?, description_ar=?, description_en=?, price_cents=?, original_price_cents=?,
+         image_url=?, is_available=?, category_id=?, track_stock=?, stock_quantity=? WHERE id=? AND restaurant_id=?`)
+      .run(text.name, text.description, text.name_ar, text.name_en, text.description_ar, text.description_en, price.price_cents, price.original_price_cents,
+        next.image, next.available, next.category, stock.track_stock, stock.stock_quantity, id, req.restaurant.id);
+    if (groups) catalog.syncGroups(req.db, req.restaurant.id, id, groups);
+    applyFormStock(req.db, req.restaurant.id, id, b, stock);
+  });
+  const row = req.db.prepare(`${PRODUCT_LIST} WHERE p.id = ? AND p.restaurant_id = ?`).get(id, req.restaurant.id);
+  ok(res, { product: listedProduct(req, row), optionGroups: catalog.loadGroups(req.db, req.restaurant.id, id) });
 });
 
-// Staff may flip availability (86'ing an item) but not edit prices or delete.
+// Staff may flip availability (86'ing an item) and update stock but not edit prices, text, extras or delete.
 router.patch('/products/:id/availability', (req, res) => {
   const available = bool(req.body?.isAvailable, 'isAvailable');
   const info = req.db.prepare('UPDATE products SET is_available = ? WHERE id = ? AND restaurant_id = ?')
-    .run(available ? 1 : 0, Number(req.params.id) || 0, req.restaurant.id);
+    .run(available ? 1 : 0, idOf(req.params.id), req.restaurant.id);
   if (!info.changes) throw notFound('Product');
   ok(res, { updated: true });
 });
 
+// Stock control without touching the rest of the item. `quantity` sets an absolute value; `restockBy` ADDS units atomically (safe while
+// orders are arriving - an absolute value typed from a stale screen could overwrite units that were sold in the meantime).
+// Shared by dishes (products) and general extras (restaurant_extras); `table` is only ever one of those two literals.
+function patchStock(req, table, label, format) {
+  const id = idOf(req.params.id);
+  const b = req.body || {};
+  if (b.quantity !== undefined && b.restockBy !== undefined) throw new HttpError(400, 'validation_error', 'quantity: send either quantity or restockBy, not both', { field: 'quantity', reason: 'conflict' });
+  if (b.trackStock === undefined && b.quantity === undefined && b.restockBy === undefined) throw new HttpError(400, 'validation_error', 'quantity: nothing to update', { field: 'quantity', reason: 'required' });
+  const track = b.trackStock !== undefined ? (bool(b.trackStock, 'trackStock') ? 1 : 0) : undefined;
+  const qty = b.quantity !== undefined ? int(b.quantity, 'quantity', { max: 1e6 }) : undefined;
+  const add = b.restockBy !== undefined ? int(b.restockBy, 'restockBy', { min: 1, max: 1e6 }) : undefined;
+  const branchList = inventory.activeBranches(req.db, req.restaurant.id);
+  if (branchList.length > 1 && (qty !== undefined || add !== undefined)) {
+    throw new HttpError(409, 'use_branch_stock', 'This restaurant has several branches: set quantities per branch on the Availability & stock page', { reason: 'use_branch_stock' });
+  }
+  tx(req.db, () => {
+    const cur = req.db.prepare(`SELECT * FROM ${table} WHERE id = ? AND restaurant_id = ?`).get(id, req.restaurant.id);
+    if (!cur) throw notFound(label);
+    if (branchList.length === 1 && (qty !== undefined || add !== undefined)) { // the only branch holds the quantity
+      if (track !== undefined) req.db.prepare(`UPDATE ${table} SET track_stock = ? WHERE id = ? AND restaurant_id = ?`).run(track, id, req.restaurant.id);
+      if (!(track ?? cur.track_stock)) throw new HttpError(409, 'stock_not_tracked', 'Turn on stock tracking for this item before changing its quantity');
+      inventory.updateStock(req.db, req.restaurant.id, { kind: table === 'products' ? 'dish' : 'extra', itemId: id, branchId: branchList[0].id, quantity: qty, restockBy: add });
+      return;
+    }
+    if (track !== undefined) req.db.prepare(`UPDATE ${table} SET track_stock = ? WHERE id = ? AND restaurant_id = ?`).run(track, id, req.restaurant.id);
+    if (qty !== undefined) req.db.prepare(`UPDATE ${table} SET stock_quantity = ? WHERE id = ? AND restaurant_id = ?`).run(qty, id, req.restaurant.id);
+    if (add !== undefined) {
+      if (!(track ?? cur.track_stock)) throw new HttpError(409, 'stock_not_tracked', 'Turn on stock tracking for this item before restocking it');
+      if (cur.stock_quantity + add > 1e6) throw new HttpError(400, 'validation_error', 'restockBy: stock would exceed the maximum', { field: 'restockBy', reason: 'out_of_range', min: 1, max: 1e6 - cur.stock_quantity });
+      req.db.prepare(`UPDATE ${table} SET stock_quantity = stock_quantity + ? WHERE id = ? AND restaurant_id = ?`).run(add, id, req.restaurant.id);
+    }
+  });
+  return format(inventory.withBranchTotals(req.db, req.restaurant.id, [req.db.prepare(`SELECT * FROM ${table} WHERE id = ? AND restaurant_id = ?`).get(id, req.restaurant.id)], table === 'products' ? 'dish' : 'extra')[0]);
+}
+router.patch('/products/:id/stock', (req, res) => ok(res, { product: patchStock(req, 'products', 'Product', fmtProduct) }));
+
 router.delete('/products/:id', requireOwner, (req, res) => {
-  const info = req.db.prepare('DELETE FROM products WHERE id = ? AND restaurant_id = ?')
-    .run(Number(req.params.id) || 0, req.restaurant.id);
-  if (!info.changes) throw notFound('Product');
+  if (!catalog.removeProduct(req.db, req.restaurant.id, idOf(req.params.id))) throw notFound('Product');
   ok(res, { deleted: true });
 });
 
 // ---------------- image upload ----------------
-const MAGIC = [
-  { ext: 'png', test: (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
-  { ext: 'jpg', test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
-  { ext: 'webp', test: (b) => b.length > 12 && b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' },
-];
 router.post('/uploads',
   requireOwner,
   express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '2mb' }),
   (req, res) => {
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      throw new HttpError(415, 'unsupported_media', 'Upload a PNG, JPEG or WebP image (max 2 MB)');
-    }
-    const kind = MAGIC.find((m) => m.test(req.body)); // trust file contents, not the declared type
-    if (!kind) throw new HttpError(415, 'unsupported_media', 'File is not a valid PNG, JPEG or WebP image');
-    const dir = path.join(config.uploadDir, String(req.restaurant.id));
-    fs.mkdirSync(dir, { recursive: true });
-    const name = `${crypto.randomBytes(12).toString('hex')}.${kind.ext}`;
-    fs.writeFileSync(path.join(dir, name), req.body);
-    ok(res, { url: `/uploads/${req.restaurant.id}/${name}` }, 201);
+    ok(res, { url: uploads.saveImage(req.restaurant.id, req.body) }, 201);
   });
 
-// ---------------- menu options / add-ons (owner) ----------------
+// ---------------- extras / add-ons (owner) ----------------
+// The dashboard saves extras together with the dish (`optionGroups` on POST/PUT /products). These endpoints manage one group at a time.
 function loadOwnProduct(db, restaurantId, id) {
-  const p = db.prepare('SELECT id FROM products WHERE id = ? AND restaurant_id = ?').get(Number(id) || 0, restaurantId);
+  const p = db.prepare('SELECT id FROM products WHERE id = ? AND restaurant_id = ?').get(idOf(id), restaurantId);
   if (!p) throw notFound('Product');
   return p;
 }
-const fmtGroup = (db, restaurantId, g) => ({
-  id: g.id, productId: g.product_id, name: g.name, minSelect: g.min_select, maxSelect: g.max_select,
-  options: db.prepare('SELECT id, name, price_cents, is_available FROM options WHERE group_id = ? AND restaurant_id = ? ORDER BY sort_order, id').all(g.id, restaurantId)
-    .map((o) => ({ id: o.id, name: o.name, priceCents: o.price_cents, isAvailable: !!o.is_available })),
-});
+const groupIds = (db, restaurantId, productId) => db.prepare('SELECT id FROM option_groups WHERE product_id = ? AND restaurant_id = ?').all(productId, restaurantId).map((r) => r.id);
+const oneGroup = (db, restaurantId, productId, groupId) => catalog.loadGroups(db, restaurantId, productId).find((g) => g.id === groupId);
 
 router.get('/products/:id/option-groups', (req, res) => {
   const p = loadOwnProduct(req.db, req.restaurant.id, req.params.id);
-  const groups = req.db.prepare('SELECT * FROM option_groups WHERE product_id = ? AND restaurant_id = ? ORDER BY sort_order, id').all(p.id, req.restaurant.id);
-  ok(res, { groups: groups.map((g) => fmtGroup(req.db, req.restaurant.id, g)) });
+  ok(res, { groups: catalog.loadGroups(req.db, req.restaurant.id, p.id) });
 });
-
-function parseOptions(list) {
-  if (!Array.isArray(list) || list.length === 0 || list.length > 30) throw new HttpError(400, 'validation_error', 'options: provide 1-30 options', { field: 'options' });
-  return list.map((o, i) => ({
-    name: str(o?.name, `options[${i}].name`, { max: 80 }),
-    priceCents: int(o?.priceCents ?? 0, `options[${i}].priceCents`, { max: 1e7 }),
-    isAvailable: o?.isAvailable === undefined ? true : bool(o.isAvailable, `options[${i}].isAvailable`),
-  }));
-}
-
-function saveGroup(db, restaurantId, productId, b, groupId) {
-  const minSelect = int(b.minSelect ?? 0, 'minSelect', { max: 30 });
-  const maxSelect = int(b.maxSelect ?? 1, 'maxSelect', { min: 1, max: 30 });
-  const options = parseOptions(b.options);
-  if (minSelect > maxSelect || maxSelect > options.length) throw new HttpError(400, 'validation_error', 'minSelect/maxSelect: inconsistent with the number of options', { field: 'maxSelect' });
-  const name = str(b.name, 'name', { max: 80 });
-  return tx(db, () => {
-    let id = groupId;
-    if (id) {
-      db.prepare('UPDATE option_groups SET name = ?, min_select = ?, max_select = ? WHERE id = ? AND restaurant_id = ?').run(name, minSelect, maxSelect, id, restaurantId);
-      // order_item_options keeps its own snapshot (name + price), so past orders are unaffected by replacing options.
-      db.prepare('DELETE FROM options WHERE group_id = ? AND restaurant_id = ?').run(id, restaurantId);
-    } else {
-      id = Number(db.prepare('INSERT INTO option_groups (restaurant_id, product_id, name, min_select, max_select) VALUES (?,?,?,?,?)').run(restaurantId, productId, name, minSelect, maxSelect).lastInsertRowid);
-    }
-    const ins = db.prepare('INSERT INTO options (restaurant_id, group_id, name, price_cents, is_available, sort_order) VALUES (?,?,?,?,?,?)');
-    options.forEach((o, i) => ins.run(restaurantId, id, o.name, o.priceCents, o.isAvailable ? 1 : 0, i));
-    return db.prepare('SELECT * FROM option_groups WHERE id = ?').get(id);
-  });
-}
 
 router.post('/products/:id/option-groups', requireOwner, (req, res) => {
   const p = loadOwnProduct(req.db, req.restaurant.id, req.params.id);
-  const g = saveGroup(req.db, req.restaurant.id, p.id, req.body || {});
-  ok(res, { group: fmtGroup(req.db, req.restaurant.id, g) }, 201);
+  const g = catalog.parseGroup({ ...(req.body || {}), id: undefined }, 'group');
+  const existing = groupIds(req.db, req.restaurant.id, p.id);
+  if (existing.length >= 10) throw new HttpError(400, 'validation_error', 'group: at most 10 extra groups per dish', { field: 'group', reason: 'too_many', max: 10 });
+  const gid = catalog.upsertGroup(req.db, req.restaurant.id, p.id, g, existing.length, existing, 'group');
+  ok(res, { group: oneGroup(req.db, req.restaurant.id, p.id, gid) }, 201);
 });
 
 router.put('/option-groups/:id', requireOwner, (req, res) => {
-  const g = req.db.prepare('SELECT * FROM option_groups WHERE id = ? AND restaurant_id = ?').get(Number(req.params.id) || 0, req.restaurant.id);
-  if (!g) throw notFound('Option group');
-  ok(res, { group: fmtGroup(req.db, req.restaurant.id, saveGroup(req.db, req.restaurant.id, g.product_id, req.body || {}, g.id)) });
+  const cur = req.db.prepare('SELECT * FROM option_groups WHERE id = ? AND restaurant_id = ?').get(idOf(req.params.id), req.restaurant.id);
+  if (!cur) throw notFound('Option group');
+  const g = catalog.parseGroup({ ...(req.body || {}), id: cur.id }, 'group');
+  catalog.upsertGroup(req.db, req.restaurant.id, cur.product_id, g, cur.sort_order, groupIds(req.db, req.restaurant.id, cur.product_id), 'group');
+  ok(res, { group: oneGroup(req.db, req.restaurant.id, cur.product_id, cur.id) });
 });
 
 router.delete('/option-groups/:id', requireOwner, (req, res) => {
-  const info = req.db.prepare('DELETE FROM option_groups WHERE id = ? AND restaurant_id = ?').run(Number(req.params.id) || 0, req.restaurant.id);
-  if (!info.changes) throw notFound('Option group');
+  const id = idOf(req.params.id);
+  tx(req.db, () => {
+    if (!req.db.prepare('SELECT 1 FROM option_groups WHERE id = ? AND restaurant_id = ?').get(id, req.restaurant.id)) throw notFound('Option group');
+    catalog.removeGroup(req.db, req.restaurant.id, id);
+  });
+  ok(res, { deleted: true });
+});
+
+// ---------------- general (order-level) extras ----------------
+// Extras a customer can add to an order without choosing a dish (water, fries, sauces ...). Owner creates / edits / deletes; staff may
+// switch an extra on/off and adjust its stock, like dishes. Every row is read and written together with req.restaurant.id.
+const MAX_GENERAL_EXTRAS = 200;
+const extraRow = (db, restaurantId, id) => db.prepare('SELECT * FROM restaurant_extras WHERE id = ? AND restaurant_id = ?').get(id, restaurantId);
+
+const formatExtraRow = (req, id) => catalog.formatExtra(inventory.withBranchTotals(req.db, req.restaurant.id, [extraRow(req.db, req.restaurant.id, id)], 'extra')[0]);
+function applyExtraStock(req, id, e) {
+  applyFormStock(req.db, req.restaurant.id, id, req.body || {}, { track_stock: e.track_stock, stock_quantity: e.stock_quantity }, 'extra');
+}
+
+router.get('/extras', (req, res) => {
+  const rows = req.db.prepare(`SELECT * FROM restaurant_extras WHERE restaurant_id = ? ORDER BY ${catalog.EXTRA_ORDER}`).all(req.restaurant.id);
+  ok(res, { extras: inventory.withBranchTotals(req.db, req.restaurant.id, rows, 'extra').map(catalog.formatExtra), categories: catalog.EXTRA_CATEGORIES });
+});
+
+router.post('/extras', requireOwner, (req, res) => {
+  const e = catalog.parseExtra(req.body || {}, null);
+  const id = tx(req.db, () => {
+    if (req.db.prepare('SELECT COUNT(*) c FROM restaurant_extras WHERE restaurant_id = ?').get(req.restaurant.id).c >= MAX_GENERAL_EXTRAS) {
+      throw new HttpError(400, 'validation_error', `extras: at most ${MAX_GENERAL_EXTRAS} general extras`, { field: 'extras', reason: 'too_many', max: MAX_GENERAL_EXTRAS });
+    }
+    const next = req.db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 n FROM restaurant_extras WHERE restaurant_id = ?').get(req.restaurant.id).n;
+    return Number(req.db.prepare(
+      `INSERT INTO restaurant_extras (restaurant_id, name, name_ar, name_en, description_ar, description_en, category, price_cents, image_url,
+         is_available, track_stock, stock_quantity, max_quantity, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(req.restaurant.id, e.name, e.name_ar, e.name_en, e.description_ar, e.description_en, e.category, e.price_cents, e.image_url,
+        e.is_available, e.track_stock, e.stock_quantity, e.max_quantity, next).lastInsertRowid);
+  });
+  applyExtraStock(req, id, e);
+  ok(res, { extra: formatExtraRow(req, id) }, 201);
+});
+
+router.put('/extras/:id', requireOwner, (req, res) => {
+  const id = idOf(req.params.id);
+  const cur = extraRow(req.db, req.restaurant.id, id);
+  if (!cur) throw notFound('Extra');
+  const e = catalog.parseExtra(req.body || {}, cur);
+  req.db.prepare(
+    `UPDATE restaurant_extras SET name = ?, name_ar = ?, name_en = ?, description_ar = ?, description_en = ?, category = ?, price_cents = ?, image_url = ?,
+       is_available = ?, track_stock = ?, stock_quantity = ?, max_quantity = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND restaurant_id = ?`)
+    .run(e.name, e.name_ar, e.name_en, e.description_ar, e.description_en, e.category, e.price_cents, e.image_url,
+      e.is_available, e.track_stock, e.stock_quantity, e.max_quantity, id, req.restaurant.id);
+  applyExtraStock(req, id, e);
+  ok(res, { extra: formatExtraRow(req, id) });
+});
+
+router.patch('/extras/:id/availability', (req, res) => {
+  const available = bool(req.body?.isAvailable, 'isAvailable');
+  const info = req.db.prepare('UPDATE restaurant_extras SET is_available = ? WHERE id = ? AND restaurant_id = ?').run(available ? 1 : 0, idOf(req.params.id), req.restaurant.id);
+  if (!info.changes) throw notFound('Extra');
+  ok(res, { updated: true });
+});
+
+router.patch('/extras/:id/stock', (req, res) => ok(res, { extra: patchStock(req, 'restaurant_extras', 'Extra', catalog.formatExtra) }));
+
+router.delete('/extras/:id', requireOwner, (req, res) => {
+  const id = idOf(req.params.id);
+  tx(req.db, () => {
+    if (!extraRow(req.db, req.restaurant.id, id)) throw notFound('Extra');
+    // past orders keep their own snapshot (name, price, quantity); only the link to the deleted extra is detached
+    req.db.prepare('UPDATE order_items SET extra_id = NULL WHERE extra_id = ? AND restaurant_id = ?').run(id, req.restaurant.id);
+    req.db.prepare('DELETE FROM restaurant_extras WHERE id = ? AND restaurant_id = ?').run(id, req.restaurant.id);
+  });
   ok(res, { deleted: true });
 });
 
@@ -317,27 +484,30 @@ router.get('/orders', (req, res) => {
   const args = status && status !== 'active' ? [req.restaurant.id, status, limit] : [req.restaurant.id, limit];
   const rows = req.db.prepare(
     `SELECT * FROM orders WHERE restaurant_id = ? AND ${VISIBLE} ${filter} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
+  const branchNames = new Map(req.db.prepare('SELECT id, name FROM branches WHERE restaurant_id = ?').all(req.restaurant.id).map((b) => [b.id, b.name]));
   ok(res, {
     orders: rows.map((o) => ({
-      ...formatOrder(o),
-      items: loadItems(req.db, o.id, req.restaurant.id).map((i) => ({ name: i.name, quantity: i.quantity, options: i.options })),
+      ...formatOrder({ ...o, branch_name: branchNames.get(o.branch_id) }),
+      // the full line snapshot: bilingual names, price at order time, extras with quantities and the customer's instructions
+      items: loadItems(req.db, o.id, req.restaurant.id),
     })),
   });
 });
 
 router.get('/orders/:id', (req, res) => {
-  const id = Number(req.params.id) || 0;
+  const id = idOf(req.params.id);
   const o = req.db.prepare(`SELECT * FROM orders WHERE id = ? AND restaurant_id = ? AND ${VISIBLE}`).get(id, req.restaurant.id);
   if (!o) throw notFound('Order');
   const history = req.db.prepare(
     'SELECT status, created_at FROM order_status_history WHERE order_id = ? AND restaurant_id = ? ORDER BY id').all(id, req.restaurant.id);
-  ok(res, { order: formatOrder(o, loadItems(req.db, id, req.restaurant.id)), history });
+  const branch = o.branch_id ? req.db.prepare('SELECT name FROM branches WHERE id = ? AND restaurant_id = ?').get(o.branch_id, req.restaurant.id) : null;
+  ok(res, { order: formatOrder({ ...o, branch_name: branch?.name }, loadItems(req.db, id, req.restaurant.id)), history });
 });
 
 router.patch('/orders/:id/status', async (req, res) => {
   const status = req.body?.status;
   if (!STATUSES.includes(status) || status === 'awaiting_payment') throw new HttpError(400, 'validation_error', 'status: unknown status', { field: 'status' });
-  const id = Number(req.params.id) || 0;
+  const id = idOf(req.params.id);
   if (!req.db.prepare(`SELECT 1 FROM orders WHERE id = ? AND restaurant_id = ? AND ${VISIBLE}`).get(id, req.restaurant.id)) throw notFound('Order');
   const reason = req.body?.reason ? str(req.body.reason, 'reason', { max: 200 }) : null;
   const result = changeStatus(req.db, { restaurantId: req.restaurant.id, orderId: id, status, actor: req.user, reason });
@@ -421,6 +591,7 @@ router.get('/payouts', requireOwner, (req, res) => {
     payouts: rows.map((p) => ({
       id: p.id, amountCents: p.amount_cents, currency: p.currency, status: p.status, periodStart: p.period_start, periodEnd: p.period_end,
       reference: p.provider_payout_id ? String(p.provider_payout_id).replace(/^manual:/, '') : null, provider: p.provider, failureReason: p.failure_reason,
+      confirmationSource: p.status === 'paid' ? p.confirmation_source : null, // 'provider' | 'admin_manual' (the dashboard translates it)
       confirmedBy: p.status === 'paid' ? (p.confirmation_source === 'provider' ? 'payment provider' : 'recorded manually by the platform') : null,
       destination: acct?.masked_bank || null, settlementCurrency: p.settlement_currency,
       createdAt: p.created_at, paidAt: p.paid_at,
@@ -485,36 +656,15 @@ router.post('/staff', requireOwner, (req, res) => {
 router.patch('/staff/:id', requireOwner, (req, res) => {
   const active = bool(req.body?.isActive, 'isActive');
   const info = req.db.prepare("UPDATE users SET is_active = ? WHERE id = ? AND restaurant_id = ? AND role = 'staff'")
-    .run(active ? 1 : 0, Number(req.params.id) || 0, req.restaurant.id);
+    .run(active ? 1 : 0, idOf(req.params.id), req.restaurant.id);
   if (!info.changes) throw notFound('Staff member');
   ok(res, { updated: true });
 });
 
 router.delete('/staff/:id', requireOwner, (req, res) => {
   const info = req.db.prepare("DELETE FROM users WHERE id = ? AND restaurant_id = ? AND role = 'staff'")
-    .run(Number(req.params.id) || 0, req.restaurant.id);
+    .run(idOf(req.params.id), req.restaurant.id);
   if (!info.changes) throw notFound('Staff member');
-  ok(res, { deleted: true });
-});
-
-// ---------------- branches (owner, plan-limited) ----------------
-router.get('/branches', requireOwner, (req, res) => {
-  ok(res, { branches: req.db.prepare('SELECT id, name, address, phone FROM branches WHERE restaurant_id = ? ORDER BY name').all(req.restaurant.id) });
-});
-router.post('/branches', requireOwner, (req, res) => {
-  const b = req.body || {};
-  const data = { name: str(b.name, 'name', { max: 100 }), address: str(b.address, 'address', { max: 300, optional: true }), phone: phone(b.phone, 'phone', { optional: true }) };
-  const row = tx(req.db, () => {
-    enforceLimit(req.db, req.restaurant.id, 'branches');
-    const info = req.db.prepare('INSERT INTO branches (restaurant_id, name, address, phone) VALUES (?,?,?,?)')
-      .run(req.restaurant.id, data.name, data.address, data.phone);
-    return { id: Number(info.lastInsertRowid), ...data };
-  });
-  ok(res, { branch: row }, 201);
-});
-router.delete('/branches/:id', requireOwner, (req, res) => {
-  const info = req.db.prepare('DELETE FROM branches WHERE id = ? AND restaurant_id = ?').run(Number(req.params.id) || 0, req.restaurant.id);
-  if (!info.changes) throw notFound('Branch');
   ok(res, { deleted: true });
 });
 
@@ -571,13 +721,13 @@ router.post('/subscription/cancel', requireOwner, (req, res) => {
 router.post('/invoices/:id/pay', requireOwner, async (req, res) => {
   rememberOwnerPhone(req);
   const owner = req.db.prepare('SELECT id, name, email, phone FROM users WHERE id = ?').get(req.user.id);
-  const { redirectUrl } = await subscriptions.startInvoiceCheckout(req.db, req.provider, { invoiceId: Number(req.params.id) || 0, restaurantId: req.restaurant.id, customer: owner, saveCard: req.body?.saveCard === true });
+  const { redirectUrl } = await subscriptions.startInvoiceCheckout(req.db, req.provider, { invoiceId: idOf(req.params.id), restaurantId: req.restaurant.id, customer: owner, saveCard: req.body?.saveCard === true });
   ok(res, { paymentUrl: redirectUrl });
 });
 
 // Return-from-checkout verification: asks the provider; the browser's claim is never used.
 router.post('/invoices/:id/refresh', requireOwner, async (req, res) => {
-  const inv = req.db.prepare('SELECT * FROM saas_invoices WHERE id = ? AND restaurant_id = ?').get(Number(req.params.id) || 0, req.restaurant.id);
+  const inv = req.db.prepare('SELECT * FROM saas_invoices WHERE id = ? AND restaurant_id = ?').get(idOf(req.params.id), req.restaurant.id);
   if (!inv) throw notFound('Invoice');
   if (inv.status === 'open' && inv.provider_ref && req.provider.enabled) {
     try { await subscriptions.reconcileInvoiceCharge(req.db, req.provider, inv.provider_ref, inv.id); } catch { /* provider unavailable: unchanged */ }
@@ -613,7 +763,7 @@ router.get('/reports/summary', requireOwner, requireFeature('analytics'), (req, 
             COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','rejected','awaiting_payment') THEN total_cents END), 0) AS revenue
      FROM orders WHERE restaurant_id = ? AND (payment_method != 'card' OR paid_at IS NOT NULL) AND created_at >= ? GROUP BY day ORDER BY day`).all(rid, from);
   ok(res, {
-    days, orders: totals.orders, revenueCents: totals.revenue, cancelled: totals.cancelled || 0,
+    days, orders: totals.orders, revenueCents: totals.revenue, ...coupons.reportSummary(req.db, rid, from), cancelled: totals.cancelled || 0,
     customers: totals.customers, avgOrderCents: valid ? mulDiv(totals.revenue, 1, valid) : 0,
     byStatus: Object.fromEntries(byStatus.map((s) => [s.status, s.c])),
     daily: daily.map((d) => ({ day: d.day, orders: d.orders, revenueCents: d.revenue })),
@@ -624,9 +774,9 @@ router.get('/reports/advanced', requireOwner, requireFeature('advancedReports'),
   const rid = req.restaurant.id;
   const from = since(clampDays(req.query.days));
   const topProducts = req.db.prepare(
-    `SELECT i.product_name AS name, SUM(i.quantity) AS qty, SUM(i.line_total_cents) AS revenue
+    `SELECT i.product_name AS name, MAX(i.product_name_ar) AS name_ar, MAX(i.product_name_en) AS name_en, SUM(i.quantity) AS qty, SUM(i.line_total_cents) AS revenue
      FROM order_items i JOIN orders o ON o.id = i.order_id AND o.restaurant_id = i.restaurant_id
-     WHERE i.restaurant_id = ? AND o.status NOT IN ('cancelled','rejected','awaiting_payment') AND o.created_at >= ?
+     WHERE i.restaurant_id = ? AND i.item_kind = 'dish' AND o.status NOT IN ('cancelled','rejected','awaiting_payment') AND o.created_at >= ?
      GROUP BY i.product_name ORDER BY qty DESC LIMIT 10`).all(rid, from);
   const hourly = req.db.prepare(
     `SELECT CAST(substr(created_at, 12, 2) AS INTEGER) AS hour, COUNT(*) AS orders
@@ -638,7 +788,7 @@ router.get('/reports/advanced', requireOwner, requireFeature('advancedReports'),
     `SELECT order_type AS type, COUNT(*) AS orders, COALESCE(SUM(total_cents),0) AS revenue
      FROM orders WHERE restaurant_id = ? AND status NOT IN ('cancelled','rejected','awaiting_payment') AND created_at >= ? GROUP BY order_type`).all(rid, from);
   ok(res, {
-    topProducts: topProducts.map((p) => ({ name: p.name, quantity: p.qty, revenueCents: p.revenue })),
+    topProducts: topProducts.map((p) => ({ name: p.name, nameAr: p.name_ar || '', nameEn: p.name_en || '', quantity: p.qty, revenueCents: p.revenue })),
     ordersByHourUtc: hourly,
     repeatCustomers: { total: repeat.customers || 0, returning: repeat.returning_customers || 0 },
     byOrderType: byType.map((t) => ({ type: t.type, orders: t.orders, revenueCents: t.revenue })),

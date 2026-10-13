@@ -17,6 +17,8 @@ test('invalid / hostile ids never crash or leak: 400 or 404, never 500', async (
       ['GET', `/api/manage/orders/${id}`], ['PUT', `/api/manage/products/${id}`, { name: 'x' }],
       ['DELETE', `/api/manage/products/${id}`], ['PATCH', `/api/manage/orders/${id}/status`, { status: 'confirmed' }],
       ['DELETE', `/api/manage/staff/${id}`], ['PUT', `/api/manage/categories/${id}`, { name: 'x' }],
+      ['GET', `/api/manage/products/${id}`], ['PATCH', `/api/manage/products/${id}/stock`, { quantity: 1 }], ['PATCH', `/api/manage/products/${id}/availability`, { isAvailable: false }],
+      ['GET', `/api/manage/products/${id}/option-groups`], ['PUT', `/api/manage/option-groups/${id}`, { nameAr: 'أ', nameEn: 'a', options: [{ nameAr: 'ب', nameEn: 'b' }] }], ['DELETE', `/api/manage/option-groups/${id}`],
     ]) {
       const r = await t.call(m, p, { token: o.token, body });
       assert.ok([400, 404].includes(r.status), `${m} ${p} -> ${r.status}`);
@@ -52,9 +54,9 @@ test('oversized and malformed input is rejected cleanly', async () => {
     const r = await t.call('POST', '/api/manage/products', { token: o.token, body });
     assert.ok(r.status >= 400 && r.status < 500, `body ${JSON.stringify(body)} -> ${r.status}`);
   }
-  const long = await t.call('POST', '/api/auth/register', { body: { name: 'a', email: 'long@t.test', password: `a1${'x'.repeat(80)}` } });
+  const long = await t.call('POST', '/api/auth/register', { body: { name: 'a', email: 'long@t.test', phone: '+966500000000', password: `a1${'x'.repeat(80)}` } });
   assert.equal(long.status, 400); // > 72 bytes would be silently truncated by bcrypt
-  assert.equal((await t.call('POST', '/api/auth/register', { body: { name: 'x'.repeat(101), email: 'n@t.test', password: 'Passw0rd!' } })).status, 400);
+  assert.equal((await t.call('POST', '/api/auth/register', { body: { name: 'x'.repeat(101), email: 'n@t.test', phone: '+966500000000', password: 'Passw0rd!' } })).status, 400);
   const bigUpload = await t.call('POST', '/api/manage/uploads', { token: o.token, raw: true, body: Buffer.alloc(3 * 1024 * 1024, 1), headers: { 'Content-Type': 'image/png' } });
   assert.equal(bigUpload.status, 413);
 });
